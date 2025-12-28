@@ -237,6 +237,65 @@ cat sovereign/.secrets | grep DB_PASSWORD
 
 ---
 
+## Tailscale Networking Solutions (TEAM_018)
+
+There are TWO ways to expose PostgreSQL via Tailscale. Choose based on your needs:
+
+### Solution A: Custom Kernel (Full Network Stack)
+
+**When to use**: Need full Layer 3 routing, subnet routing, or non-TCP protocols.
+
+**Problem**: GKI/microdroid kernels lack `CONFIG_NETFILTER_XT_MARK` which Tailscale needs
+for fwmark-based routing to prevent packet loops.
+
+**Solution**: Build custom kernel from `defconfig` with:
+```bash
+cd aosp
+export PATH="$PWD/../prebuilts/clang/host/linux-x86/clang-r487747c/bin:$PATH"
+make O=../out/guest-kernel ARCH=arm64 CC=clang LLVM=1 defconfig
+./scripts/config --file ../out/guest-kernel/.config \
+    --enable SYSVIPC \
+    --enable VIRTIO_NET \
+    --enable NF_TABLES \
+    --enable NFT_COMPAT \
+    --set-val NETFILTER_XT_MARK y \
+    --set-val IP_NF_IPTABLES y \
+    --set-val IP_NF_FILTER y \
+    --set-val IP_NF_NAT y \
+    --set-val NF_CONNTRACK y
+make O=../out/guest-kernel ARCH=arm64 CC=clang LLVM=1 olddefconfig
+make O=../out/guest-kernel ARCH=arm64 CC=clang LLVM=1 -j$(nproc) Image
+```
+
+**Why GKI builds fail**: The ABI Monitor enforces symbol stability. Use `--kmi_enforced=false`
+and `--notrim` flags, or build from standard `defconfig` instead.
+
+---
+
+### Solution B: Tailscale Serve (Layer 4 Proxy) - SIMPLER!
+
+**When to use**: Just need to expose a TCP service like PostgreSQL.
+
+**How it works**: `tailscale serve` acts as a reverse proxy - no kernel TUN needed!
+
+```bash
+# Inside the VM (with userspace networking):
+tailscaled --tun=userspace-networking &
+tailscale up --authkey=...
+tailscale serve --bg --tcp 5432 5432
+```
+
+**Benefits**:
+- Works with stock microdroid/GKI kernel
+- No kernel compilation needed
+- Auto-updates with Tailscale
+- Simple single command
+
+**Caveat**: PostgreSQL sees connections from 127.0.0.1, not the original Tailscale IP.
+Use Tailscale ACLs for access control instead of pg_hba.conf IP rules.
+
+---
+
 ## Known Gotchas (TEAM_017)
 
 ### 1. Android Policy Routing
@@ -325,4 +384,4 @@ rm -f vm/sql/rootfs.img vm/sql/data.img
 
 ---
 
-*Last updated: 2024-12-28 by TEAM_017*
+*Last updated: 2024-12-29 by TEAM_018*
