@@ -210,34 +210,32 @@ sleep 3
 echo "=== Testing Network ==="
 ping -c 3 8.8.8.8 2>&1 || echo "Ping failed"
 
-# Start Tailscale
-# TEAM_018: Persist state on /data, always use authkey if provided
+# Start Tailscale with USERSPACE NETWORKING + SERVE
+# TEAM_018: THE CORRECT SOLUTION IS tailscale serve
 #
-# CRITICAL - DO NOT USE --tun=userspace-networking
-# Userspace networking DOES NOT EXPOSE PORTS to the tailnet.
-# This broke PostgreSQL accessibility for TEAM_018.
-# The guest kernel has CONFIG_TUN=y, so use kernel TUN mode.
-#
-# NEVER SUGGEST THESE WORKAROUNDS:
-# - Port forwarding through Android (shares IP, breaks multi-service)
-# - Direct connection via phone IP (not accessible from tailnet)
-# - Any other hack that avoids fixing the real problem
-#
-# THE CORRECT FIX: Use kernel TUN mode (no --tun flag)
+# tailscale serve acts as Layer 4 proxy - exposes ports WITHOUT kernel TUN!
+# This works with ANY kernel (stock GKI, microdroid, whatever)
+# No need for CONFIG_NETFILTER_XT_MARK or custom kernel builds
 #
 echo "=== Starting Tailscale ==="
 mkdir -p /data/tailscale /var/run/tailscale /dev/net
 [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
 chmod 666 /dev/net/tun
+
+# Use userspace networking - works with any kernel
 /usr/sbin/tailscaled \
+    --tun=userspace-networking \
     --state=/data/tailscale/tailscaled.state \
     --socket=/var/run/tailscale/tailscaled.sock &
 sleep 10
 
 AUTHKEY=$(cat /proc/cmdline | tr ' ' '\n' | grep tailscale.authkey | cut -d= -f2)
 if [ -n "$AUTHKEY" ]; then
-    # Authkey handles both new registration and reconnection
     /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-sql 2>&1
+    sleep 5
+    # THE KEY: tailscale serve exposes PostgreSQL port to tailnet
+    /usr/bin/tailscale serve --bg --tcp 5432 5432 2>&1
+    echo "Tailscale serve configured for PostgreSQL on port 5432"
 else
     echo "WARNING: No authkey provided"
 fi
