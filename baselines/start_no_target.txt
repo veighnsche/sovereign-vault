@@ -1,0 +1,2 @@
+Error: start requires a VM target (--sql, --vault, --forge)
+exit status 1

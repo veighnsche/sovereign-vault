@@ -1,0 +1,31 @@
+Sovereign Vault CLI
+
+Usage: go run main.go <command> [flags]
+       (Run from sovereign/ directory)
+
+Commands:
+  build     Build kernel or VM image
+  deploy    Deploy kernel or VM to device
+  start     Start a VM (--sql, --vault, --forge)
+  stop      Stop a VM (--sql, --vault, --forge)
+  test      Test kernel root or VM connectivity
+  status    Show system status
+  prepare   Fix rootfs for AVF (vsock, device nodes) - idempotent
+
+Flags:
+  --kernel  Target kernel operations (default)
+  --sql     Target PostgreSQL VM
+
+Examples:
+  go run main.go build --kernel
+  go run main.go deploy --kernel
+  go run main.go test --kernel
+  go run main.go build --sql
+  go run main.go deploy --sql
+  go run main.go start --sql
+  go run main.go test --sql
+  go run main.go status
+
+Future flags:
+  --vault   Target Vaultwarden VM
+  --forge   Target Forgejo VM

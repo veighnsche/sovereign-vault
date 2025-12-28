@@ -1,0 +1,9 @@
+{
+  "name": "forgejo",
+  "memory_mb": 1024,
+  "cpus": 2,
+  "cid": 4,
+  "rootfs_size_mb": 512,
+  "data_size_mb": 4096,
+  "ports": [3000, 22]
+}

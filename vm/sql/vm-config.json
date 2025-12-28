@@ -1,0 +1,5 @@
+{
+  "kernel": "/data/sovereign/vm/sql/Image",
+  "initrd": "/data/sovereign/vm/sql/initramfs",
+  "params": "rdinit=/bin/init"
+}

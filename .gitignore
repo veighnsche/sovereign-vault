@@ -1,0 +1,28 @@
+# Sovereign Vault .gitignore
+
+# Environment files (contains secrets)
+.env
+.secrets
+
+# Go build artifacts
+sovereign
+*.exe
+
+# VM build artifacts (large files)
+vm/sql/rootfs.img
+vm/sql/data.img
+vm/sql/Image
+vm/sql/Image.raw
+vm/sql/vmlinuz-virt
+vm/sql/initramfs-virt
+vm/forgejo/rootfs.img
+vm/forgejo/data.img
+vm/forgejo/Image
+
+# Temporary/debug files
+console_log_pulled.txt
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
