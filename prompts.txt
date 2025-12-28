@@ -1,7 +1,0 @@
-The deploy script needs a prefligh script to check if there already is a tailscale machine registered.. so that it wouldn't REREGISTER the same machine under another name... we need dependency stability... especially for services like postgresql
-
----
-
-How possible is it for `sovereign start --sql` to stdout/err the boot sequence of alpine? can we tap into that? so that we don't have to blindly wait for a startup to finish, and then tapping into the postgresql startup sequence... then taking that as an indication that the startup is done...
-
-But btw we need to debug the mysql startup first

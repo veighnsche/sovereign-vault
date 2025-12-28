@@ -1,83 +1,19 @@
-# TEAM_006: Custom kernel config for Sovereign SQL VM
-# Based on Alpine virt but with virtio BUILT-IN for crosvm boot
-# This is a minimal config fragment - merge with defconfig
+# TEAM_018: MINIMAL kernel config for PostgreSQL VM
+#
+# ONLY enable what's strictly required:
+# - VIRTIO_NET: VM networking
+# - SYSVIPC: PostgreSQL shared memory (shmget)
+#
+# DO NOT ADD:
+# - Netfilter/iptables (tailscale serve doesn't need it)
+# - MARK targets (not needed with userspace networking)
+# - Any other "just in case" features
+#
+# Stock GKI kernel lacks SYSVIPC, so we must build minimal custom kernel.
 
-# Essential virtio drivers - MUST be built-in (=y) not modules (=m)
+# VM networking
 CONFIG_VIRTIO=y
-CONFIG_VIRTIO_PCI=y
-CONFIG_VIRTIO_PCI_LEGACY=y
-CONFIG_VIRTIO_MMIO=y
-CONFIG_VIRTIO_BLK=y
 CONFIG_VIRTIO_NET=y
-CONFIG_VIRTIO_CONSOLE=y
-CONFIG_HVC_DRIVER=y
 
-# Block layer
-CONFIG_BLK_DEV=y
-CONFIG_BLK_MQ_VIRTIO=y
-
-# Filesystems needed for root
-CONFIG_EXT4_FS=y
-CONFIG_EXT4_USE_FOR_EXT2=y
-
-# Console support
-CONFIG_VT=y
-CONFIG_VT_CONSOLE=y
-CONFIG_SERIAL_EARLYCON=y
-
-# Networking for Tailscale
-CONFIG_NET=y
-CONFIG_INET=y
-CONFIG_TUN=y
-
-# TEAM_012/018: Full netfilter stack for Tailscale kernel mode
-# CRITICAL: Must have nf_tables backend for iptables to work
-CONFIG_NETFILTER=y
-CONFIG_NETFILTER_ADVANCED=y
-CONFIG_NETFILTER_INGRESS=y
-CONFIG_NETFILTER_NETLINK=y
-CONFIG_NETFILTER_XTABLES=y
-CONFIG_NETFILTER_XT_MARK=y
-CONFIG_NETFILTER_XT_CONNMARK=y
-CONFIG_NETFILTER_XT_TARGET_MARK=y
-CONFIG_NETFILTER_XT_MATCH_MARK=y
-CONFIG_NETFILTER_XT_MATCH_CONNMARK=y
-CONFIG_NETFILTER_XT_MATCH_STATE=y
-CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
-CONFIG_NF_CONNTRACK=y
-CONFIG_NF_CONNTRACK_MARK=y
-CONFIG_NF_NAT=y
-CONFIG_NF_TABLES=y
-CONFIG_NF_TABLES_INET=y
-CONFIG_NF_TABLES_NETDEV=y
-CONFIG_NFT_MARK=y
-CONFIG_NFT_CT=y
-CONFIG_NFT_NAT=y
-CONFIG_NFT_MASQ=y
-CONFIG_NFT_REJECT=y
-CONFIG_NFT_COMPAT=y
-CONFIG_IP_NF_IPTABLES=y
-CONFIG_IP_NF_FILTER=y
-CONFIG_IP_NF_TARGET_REJECT=y
-CONFIG_IP_NF_NAT=y
-CONFIG_IP_NF_TARGET_MASQUERADE=y
-CONFIG_IP_NF_MANGLE=y
-CONFIG_IP6_NF_IPTABLES=y
-CONFIG_IP6_NF_FILTER=y
-CONFIG_IP6_NF_TARGET_REJECT=y
-CONFIG_IP6_NF_NAT=y
-CONFIG_IP6_NF_TARGET_MASQUERADE=y
-CONFIG_IP6_NF_MANGLE=y
-
-# TEAM_012: System V IPC for PostgreSQL shared memory
+# PostgreSQL shared memory (REQUIRED - shmget fails without this)
 CONFIG_SYSVIPC=y
-
-# Required for Alpine userspace
-CONFIG_DEVTMPFS=y
-CONFIG_DEVTMPFS_MOUNT=y
-CONFIG_TMPFS=y
-CONFIG_PROC_FS=y
-CONFIG_SYSFS=y
-
-# Disable unnecessary features for minimal boot
-# CONFIG_MODULES is not set
