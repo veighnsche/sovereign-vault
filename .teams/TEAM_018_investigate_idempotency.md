@@ -92,10 +92,28 @@ fi
 
 ---
 
-## Known Limitation
+## SOLVED: Kernel Configuration
 
-Tailscale userspace networking (`--tun=userspace-networking`) doesn't properly expose ports. PostgreSQL is accessible via TAP (192.168.100.2:5432) but not via Tailscale IP. This is acceptable for now since the VM is reachable.
+**Problem:** Tailscale userspace networking doesn't expose ports to tailnet.
+
+**Root Cause:** GKI/microdroid kernels lack required features for PostgreSQL + Tailscale.
+
+**Solution:** Build custom kernel from `defconfig` with:
+```bash
+./scripts/config --file .config \
+    --enable SYSVIPC \           # PostgreSQL shared memory
+    --enable VIRTIO_NET \        # VM networking
+    --enable NF_TABLES \         # Tailscale netfilter
+    --enable NFT_COMPAT \
+    --set-val NETFILTER_XT_MARK y \
+    --set-val IP_NF_IPTABLES y \
+    --set-val IP_NF_FILTER y \
+    --set-val IP_NF_NAT y \
+    --set-val NF_CONNTRACK y
+```
+
+**Result:** PostgreSQL accessible via Tailscale IP (100.91.151.84:5432) ✓
 
 ---
 
-*TEAM_018 - 2024-12-28*
+*TEAM_018 - 2024-12-29*

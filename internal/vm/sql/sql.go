@@ -1,5 +1,23 @@
 // Package sql provides the PostgreSQL VM implementation
 // TEAM_010: Extracted from main.go during CLI refactor
+//
+// CRITICAL ARCHITECTURE REQUIREMENTS - READ BEFORE MODIFYING:
+//
+// 1. PostgreSQL MUST be accessible via Tailscale from ANY device on the tailnet
+// 2. Each VM MUST have its OWN Tailscale IP - NO SHARING IPs between services
+// 3. Tailscale MUST use kernel TUN mode (CONFIG_TUN=y) - NOT userspace networking
+//
+// FORBIDDEN WORKAROUNDS (these are WRONG, do not suggest them):
+// - Port forwarding through Android's Tailscale (shares IP, breaks multi-service)
+// - Direct connection via phone's LAN IP (not accessible from tailnet)
+// - SQLite instead of PostgreSQL (architecture violation)
+// - Any hack that avoids fixing the real networking problem
+//
+// If Tailscale ports are not accessible, the fix is:
+// - Ensure /dev/net/tun exists in guest
+// - Run tailscaled WITHOUT --tun=userspace-networking
+// - The guest kernel MUST have CONFIG_TUN=y (it does)
+//
 package sql
 
 import (

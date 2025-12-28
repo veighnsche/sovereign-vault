@@ -171,8 +171,26 @@ chmod 666 /dev/net/tun
 echo "=== Configuring TAP Network ==="
 sleep 3
 
-# Find network interface dynamically (may not be eth0)
-IFACE=$(ls /sys/class/net/ | grep -v lo | head -1)
+# Find virtio network interface (not tunnel interfaces like erspan0)
+# Look for eth* or enp* which are real network devices
+IFACE=""
+for iface in $(ls /sys/class/net/); do
+    case "$iface" in
+        eth*|enp*|ens*) IFACE="$iface"; break ;;
+    esac
+done
+# Fallback: look for device with virtio driver
+if [ -z "$IFACE" ]; then
+    for iface in $(ls /sys/class/net/); do
+        if [ -d "/sys/class/net/$iface/device/driver" ]; then
+            driver=$(basename $(readlink /sys/class/net/$iface/device/driver))
+            if [ "$driver" = "virtio_net" ]; then
+                IFACE="$iface"
+                break
+            fi
+        fi
+    done
+fi
 echo "Found interface: $IFACE"
 
 if [ -n "$IFACE" ]; then
@@ -194,9 +212,24 @@ ping -c 3 8.8.8.8 2>&1 || echo "Ping failed"
 
 # Start Tailscale
 # TEAM_018: Persist state on /data, always use authkey if provided
+#
+# CRITICAL - DO NOT USE --tun=userspace-networking
+# Userspace networking DOES NOT EXPOSE PORTS to the tailnet.
+# This broke PostgreSQL accessibility for TEAM_018.
+# The guest kernel has CONFIG_TUN=y, so use kernel TUN mode.
+#
+# NEVER SUGGEST THESE WORKAROUNDS:
+# - Port forwarding through Android (shares IP, breaks multi-service)
+# - Direct connection via phone IP (not accessible from tailnet)
+# - Any other hack that avoids fixing the real problem
+#
+# THE CORRECT FIX: Use kernel TUN mode (no --tun flag)
+#
 echo "=== Starting Tailscale ==="
-mkdir -p /data/tailscale /var/run/tailscale
-/usr/sbin/tailscaled --tun=userspace-networking \
+mkdir -p /data/tailscale /var/run/tailscale /dev/net
+[ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
+chmod 666 /dev/net/tun
+/usr/sbin/tailscaled \
     --state=/data/tailscale/tailscaled.state \
     --socket=/var/run/tailscale/tailscaled.sock &
 sleep 10
