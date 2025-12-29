@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -142,8 +143,21 @@ func (v *VM) Build() error {
 	return nil
 }
 
+// TEAM_019: Package-level flag to skip Tailscale idempotency check
+var ForceDeploySkipTailscaleCheck bool
+
 func (v *VM) Deploy() error {
 	fmt.Println("=== Deploying PostgreSQL VM ===")
+
+	// TEAM_019: Preflight - check for existing Tailscale registrations
+	// This prevents creating duplicate machines that break IP stability
+	if !ForceDeploySkipTailscaleCheck {
+		if err := checkTailscaleRegistration(); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println("⚠ FORCE MODE: Skipping Tailscale idempotency check (may create duplicate registration)")
+	}
 
 	// Verify images and kernel exist
 	requiredFiles := []string{"vm/sql/rootfs.img", "vm/sql/data.img", "vm/sql/Image"}
@@ -209,12 +223,21 @@ func (v *VM) Start() error {
 	fmt.Println("=== Starting PostgreSQL VM ===")
 
 	// Check if VM is already running
-	runningOut, _ := device.RunShellCommand("for pid in $(pidof crosvm); do grep -q 'sql/rootfs' /proc/$pid/cmdline 2>/dev/null && echo $pid; done")
-	runningPid := strings.TrimSpace(runningOut)
+	runningPid := device.GetProcessPID("crosvm.*sql")
 	if runningPid != "" {
 		fmt.Printf("⚠ VM already running (PID: %s)\n", runningPid)
 		fmt.Println("Run 'sovereign stop --sql' first to restart")
 		return nil
+	}
+
+	// TEAM_020: Preflight check - Tailscale registration happens during START, not deploy
+	// This is the CRITICAL check - if sovereign-sql exists (even offline), new VM gets renamed
+	if !ForceDeploySkipTailscaleCheck {
+		if err := checkTailscaleRegistration(); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println("⚠ FORCE MODE: Skipping Tailscale idempotency check")
 	}
 
 	// Check if start script exists
@@ -222,7 +245,10 @@ func (v *VM) Start() error {
 		return fmt.Errorf("start script not found - run 'sovereign deploy --sql' first")
 	}
 
-	// Start the VM
+	// TEAM_020: Clear old console log before starting
+	device.RunShellCommand("rm -f /data/sovereign/vm/sql/console.log")
+
+	// Start the VM (start.sh backgrounds crosvm and returns immediately)
 	fmt.Println("Starting VM...")
 	cmd := exec.Command("adb", "shell", "su", "-c", "/data/sovereign/vm/sql/start.sh")
 	cmd.Stdout = os.Stdout
@@ -231,28 +257,91 @@ func (v *VM) Start() error {
 		return fmt.Errorf("start script failed: %w", err)
 	}
 
-	// Wait a moment and verify
-	time.Sleep(2 * time.Second)
-	vmPid := device.GetProcessPID("crosvm.*sql")
-	if vmPid == "" {
-		fmt.Println("\n⚠ VM process not found - checking logs:")
-		if logs, err := device.ReadFileContent("/data/sovereign/vm/sql/console.log", 20); err == nil {
-			fmt.Println(logs)
-		}
-		return fmt.Errorf("VM failed to start - see logs above")
-	}
+	// TEAM_020: Stream boot sequence and wait for PostgreSQL readiness
+	fmt.Println("\n--- Boot Sequence ---")
+	return streamBootAndWaitForPostgres()
+}
 
-	fmt.Println("\n✓ PostgreSQL VM started")
-	fmt.Println("\nNext: sovereign test --sql")
-	return nil
+// TEAM_020: Stream console.log and wait for PostgreSQL to be ready
+func streamBootAndWaitForPostgres() error {
+	const (
+		maxWaitSeconds    = 90
+		pollIntervalMs    = 500
+		pgCheckAfterSecs  = 15 // Start checking PostgreSQL port after kernel boot
+	)
+
+	var lastLineCount int
+	var kernelBooted bool
+	startTime := time.Now()
+
+	for {
+		elapsed := time.Since(startTime)
+		if elapsed > maxWaitSeconds*time.Second {
+			return fmt.Errorf("timeout waiting for PostgreSQL (%.0fs) - check 'adb shell cat /data/sovereign/vm/sql/console.log'", elapsed.Seconds())
+		}
+
+		// Get current console.log content
+		out, _ := device.RunShellCommand(fmt.Sprintf("cat /data/sovereign/vm/sql/console.log 2>/dev/null | tail -n +%d", lastLineCount+1))
+		if out != "" {
+			// Print new lines
+			lines := strings.Split(out, "\n")
+			for _, line := range lines {
+				if line != "" {
+					fmt.Println(line)
+					lastLineCount++
+
+					// Check for PostgreSQL ready marker
+					if strings.Contains(line, "PostgreSQL started") || strings.Contains(line, "database system is ready") {
+						fmt.Println("\n✓ PostgreSQL VM started and ready")
+						fmt.Println("\nNext: sovereign test --sql")
+						return nil
+					}
+
+					// Check for INIT COMPLETE as fallback
+					if strings.Contains(line, "INIT COMPLETE") {
+						time.Sleep(2 * time.Second)
+						fmt.Println("\n✓ PostgreSQL VM started")
+						fmt.Println("\nNext: sovereign test --sql")
+						return nil
+					}
+
+					// Track kernel boot completion
+					if strings.Contains(line, "Run /sbin/simple_init") {
+						kernelBooted = true
+					}
+
+					// Check for fatal errors
+					if strings.Contains(line, "Kernel panic") || strings.Contains(line, "FATAL") {
+						return fmt.Errorf("VM boot failed - see output above")
+					}
+				}
+			}
+		}
+
+		// Check if crosvm is still running
+		if device.GetProcessPID("crosvm.*sql") == "" {
+			return fmt.Errorf("VM process died during boot - check console.log")
+		}
+
+		// TEAM_020: After kernel boots, check if PostgreSQL port is open (fallback for old rootfs)
+		if kernelBooted && elapsed > pgCheckAfterSecs*time.Second {
+			pgCheck, _ := device.RunShellCommand("nc -z 192.168.100.2 5432 && echo OPEN")
+			if pgCheck == "OPEN" {
+				fmt.Println("\n✓ PostgreSQL VM started (port 5432 responding)")
+				fmt.Println("\nNext: sovereign test --sql")
+				return nil
+			}
+		}
+
+		time.Sleep(pollIntervalMs * time.Millisecond)
+	}
 }
 
 func (v *VM) Stop() error {
 	fmt.Println("=== Stopping PostgreSQL VM ===")
 
-	// Find SQL VM crosvm process
-	out, _ := device.RunShellCommand("for pid in $(pidof crosvm); do grep -q 'sql/rootfs' /proc/$pid/cmdline 2>/dev/null && echo $pid; done")
-	pid := strings.TrimSpace(out)
+	// TEAM_020: Use pgrep like Start() and Test() - the for-loop was unreliable
+	pid := device.GetProcessPID("crosvm.*sql")
 
 	if pid != "" {
 		fmt.Printf("Stopping VM (PID: %s)...\n", pid)
@@ -415,5 +504,56 @@ func createStartScript() error {
 		return fmt.Errorf("failed to chmod start script: %w", err)
 	}
 
+	return nil
+}
+
+// TEAM_019/TEAM_020: Preflight check to prevent duplicate Tailscale registrations
+// Returns error if sovereign-sql is already registered (causes IP instability)
+// CRITICAL: Checks ALL machines (online AND offline) - offline machines still exist
+// and will cause Tailscale to auto-rename new registrations (e.g., sovereign-sql-1)
+func checkTailscaleRegistration() error {
+	out, err := exec.Command("tailscale", "status").Output()
+	if err != nil {
+		// Tailscale not available on host - skip check but warn
+		fmt.Println("⚠ Warning: Cannot check Tailscale status (tailscale CLI not available)")
+		fmt.Println("  Ensure no duplicate sovereign-sql machines exist before deploying")
+		return nil
+	}
+
+	// Parse output for sovereign-sql machines (ALL of them, including offline)
+	lines := strings.Split(string(out), "\n")
+	var existingMachines []string
+	re := regexp.MustCompile(`^(\d+\.\d+\.\d+\.\d+)\s+(sovereign-sql\S*)\s+`)
+
+	for _, line := range lines {
+		matches := re.FindStringSubmatch(line)
+		if len(matches) >= 3 {
+			ip := matches[1]
+			name := matches[2]
+			status := "online"
+			if strings.Contains(line, "offline") {
+				status = "OFFLINE"
+			}
+			existingMachines = append(existingMachines, fmt.Sprintf("%s (%s) [%s]", name, ip, status))
+		}
+	}
+
+	if len(existingMachines) > 0 {
+		return fmt.Errorf("TAILSCALE IDEMPOTENCY CHECK FAILED\n\n" +
+			"  Found %d existing sovereign-sql machine(s):\n" +
+			"    %s\n\n" +
+			"  Starting will create ANOTHER registration (even offline ones block the name).\n\n" +
+			"  To fix:\n" +
+			"    1. Go to https://login.tailscale.com/admin/machines\n" +
+			"    2. Delete ALL sovereign-sql* machines (including offline ones)\n" +
+			"    3. Generate a NEW auth key if needed\n" +
+			"    4. Update .env with the new TAILSCALE_AUTHKEY\n" +
+			"    5. Run 'sovereign start --sql' again\n\n" +
+			"  Or use '--force' to skip this check (NOT RECOMMENDED)",
+			len(existingMachines),
+			strings.Join(existingMachines, "\n    "))
+	}
+
+	fmt.Println("✓ Tailscale preflight: No existing sovereign-sql registrations")
 	return nil
 }

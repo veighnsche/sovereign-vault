@@ -1,22 +1,19 @@
 # TEAM_006: PostgreSQL VM for Sovereign Vault
 # Architecture: ARM64 (runs on Pixel 6 under pKVM)
-FROM alpine:3.19
+FROM alpine:3.32.2
 
-# Install PostgreSQL and dependencies - NO kernel package
-# TEAM_006: We will use the host Android kernel or a custom-built kernel
-# because Alpine's linux-virt uses EFI stub format which crosvm can't boot
+# Install PostgreSQL and dependencies
+# TEAM_020: Removed openrc - we use simple_init_tap which bypasses it
+# Removed iptables/ip6tables - kernel uses userspace networking (no netfilter)
 RUN apk add --no-cache \
     postgresql15 \
     postgresql15-contrib \
-    openrc \
-    iptables \
-    ip6tables \
     iproute2 \
     curl
 
 # TEAM_011: Install Tailscale static binary (NOT Alpine package)
 # Alpine package is outdated. Download static binary directly.
-RUN TAILSCALE_VERSION="1.92.3" && \
+RUN TAILSCALE_VERSION="1.92.4" && \
     curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_arm64.tgz" -o /tmp/tailscale.tgz && \
     tar -xzf /tmp/tailscale.tgz -C /tmp && \
     cp /tmp/tailscale_${TAILSCALE_VERSION}_arm64/tailscale /usr/bin/ && \
@@ -39,16 +36,11 @@ RUN mkdir -p /etc/postgresql && \
     echo "host all all 0.0.0.0/0 md5" >> /etc/postgresql/pg_hba.conf && \
     echo "host all all ::/0 md5" >> /etc/postgresql/pg_hba.conf
 
-# Init script for Sovereign Vault
-COPY scripts/init.sh /etc/init.d/sovereign-init
-RUN chmod +x /etc/init.d/sovereign-init
+# TEAM_020: OpenRC not used - we use simple_init_tap which bypasses it entirely
+# This is because OpenRC doesn't work reliably in crosvm environment
 
-# TEAM_017: gvforwarder removed - using TAP networking instead
-
-# TEAM_011: Create tailscale auth key directory
+# Create tailscale directories
 RUN mkdir -p /etc/tailscale /var/lib/tailscale
 
-# Enable services at boot (tailscale started by simple_init, not OpenRC)
-RUN rc-update add sovereign-init default
-
-CMD ["/sbin/init"]
+# Default CMD not used - crosvm boots with init=/sbin/simple_init
+CMD ["/bin/sh"]

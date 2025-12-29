@@ -16,7 +16,7 @@ RUN apk add --no-cache \
 
 # TEAM_011: Install Tailscale static binary (NOT Alpine package)
 # Alpine package is outdated. Download static binary directly.
-RUN TAILSCALE_VERSION="1.92.3" && \
+RUN TAILSCALE_VERSION="1.92.4" && \
     curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_arm64.tgz" -o /tmp/tailscale.tgz && \
     tar -xzf /tmp/tailscale.tgz -C /tmp && \
     cp /tmp/tailscale_${TAILSCALE_VERSION}_arm64/tailscale /usr/bin/ && \

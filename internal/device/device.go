@@ -131,9 +131,20 @@ func RunShellCommand(cmd string) (string, error) {
 }
 
 // GetProcessPID returns the PID of a process matching the pattern, or empty string if not found
+// TEAM_020: Use pidof for crosvm to avoid pgrep matching itself
 func GetProcessPID(pattern string) string {
-	out, _ := RunShellCommand(fmt.Sprintf("pgrep -f '%s' | head -1", pattern))
-	return out
+	// For crosvm, just use pidof - it's reliable and doesn't match itself
+	if strings.Contains(pattern, "crosvm") {
+		out, _ := RunShellCommand("pidof crosvm | awk '{print $1}'")
+		return out
+	}
+	// Fallback: use pgrep but exclude grep itself with bracket trick
+	if len(pattern) > 0 {
+		bracketPattern := "[" + string(pattern[0]) + "]" + pattern[1:]
+		out, _ := RunShellCommand(fmt.Sprintf("pgrep -f '%s' | head -1", bracketPattern))
+		return out
+	}
+	return ""
 }
 
 // FileExists checks if a file or directory exists on the device

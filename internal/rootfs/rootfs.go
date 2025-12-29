@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 )
 
 // PrepareForAVF fixes Alpine rootfs for AVF/crosvm compatibility
@@ -26,56 +25,24 @@ func PrepareForAVF(rootfsPath string, dbPassword string) error {
 		os.RemoveAll(mountDir)
 	}()
 
-	// Fix 1: Ensure gvforwarder init script has correct dependencies
-	// The script must run AFTER devfs mounts tmpfs over /dev
-	gvforwarderInit := mountDir + "/etc/init.d/gvforwarder"
-	if _, err := os.Stat(gvforwarderInit); err == nil {
-		// Read current content
-		content, err := os.ReadFile(gvforwarderInit)
-		if err != nil {
-			return fmt.Errorf("failed to read gvforwarder init: %w", err)
-		}
+	// TEAM_020: Removed gvforwarder code - we use TAP networking now
 
-		// Check if already fixed (idempotent check)
-		if !strings.Contains(string(content), "need devfs") {
-			// Fix the depend() function to require devfs
-			newContent := strings.Replace(string(content),
-				"need localmount",
-				"need localmount\n\tneed devfs",
-				1)
-
-			if err := exec.Command("sudo", "sh", "-c",
-				fmt.Sprintf("cat > %s << 'EOF'\n%sEOF", gvforwarderInit, newContent)).Run(); err != nil {
-				return fmt.Errorf("failed to update gvforwarder init: %w", err)
-			}
-			fmt.Println("  ✓ Fixed gvforwarder init script (added devfs dependency)")
-		} else {
-			fmt.Println("  ✓ gvforwarder init script already fixed")
-		}
-	}
-
-	// Fix 2: Create local.d script for early device node creation (belt and suspenders)
+	// Create local.d script for early device node creation
 	// This runs early in boot and ensures critical device nodes exist
 	localDDir := mountDir + "/etc/local.d"
 	exec.Command("sudo", "mkdir", "-p", localDDir).Run()
 
 	devNodesScript := localDDir + "/00-avf-devices.start"
 	devNodesContent := `#!/bin/sh
-# TEAM_007: Ensure AVF-required device nodes exist
-# This script runs early via local service
+# TEAM_020: Ensure AVF-required device nodes exist
 
-# Console devices (required for init)
+# Console devices
 [ -e /dev/console ] || mknod /dev/console c 5 1
 [ -e /dev/tty ] || mknod /dev/tty c 5 0
 [ -e /dev/tty0 ] || mknod /dev/tty0 c 4 0
 [ -e /dev/null ] || mknod /dev/null c 1 3
 
-# vsock device (required for gvisor-tap-vsock networking)
-[ -e /dev/vsock ] || mknod /dev/vsock c 10 121
-[ -e /dev/vhost-vsock ] || mknod /dev/vhost-vsock c 10 241
-
-# TUN device (required for gvforwarder to create tap interface)
-# TEAM_011: Added - gvforwarder fails with "cannot create tap device" without this
+# TUN device (required for Tailscale)
 mkdir -p /dev/net
 [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
 chmod 666 /dev/net/tun
@@ -208,38 +175,44 @@ fi
 # Test connectivity
 sleep 3
 echo "=== Testing Network ==="
-ping -c 3 8.8.8.8 2>&1 || echo "Ping failed"
+ping -c 3 8.8.8.8 2>&1 || echo "Ping failed - Tailscale may not be working"
+if /usr/bin/tailscale status >/dev/null 2>&1; then
+    echo "Tailscale is connected"
+    /usr/bin/tailscale status
+else
+    echo "Tailscale is not connected"
+fi
 
-# Start Tailscale with USERSPACE NETWORKING + SERVE
-# TEAM_018: THE CORRECT SOLUTION IS tailscale serve
-#
-# tailscale serve acts as Layer 4 proxy - exposes ports WITHOUT kernel TUN!
-# This works with ANY kernel (stock GKI, microdroid, whatever)
-# No need for CONFIG_NETFILTER_XT_MARK or custom kernel builds
-#
+# Start Tailscale
+# TEAM_020: tailscaled auto-reconnects - only need authkey for FIRST registration
 echo "=== Starting Tailscale ==="
 mkdir -p /data/tailscale /var/run/tailscale /dev/net
 [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
 chmod 666 /dev/net/tun
 
-# Use userspace networking - works with any kernel
 /usr/sbin/tailscaled \
     --tun=userspace-networking \
     --state=/data/tailscale/tailscaled.state \
     --socket=/var/run/tailscale/tailscaled.sock &
-sleep 10
-
-AUTHKEY=$(cat /proc/cmdline | tr ' ' '\n' | grep tailscale.authkey | cut -d= -f2)
-if [ -n "$AUTHKEY" ]; then
-    /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-sql 2>&1
-    sleep 5
-    # THE KEY: tailscale serve exposes PostgreSQL port to tailnet
-    /usr/bin/tailscale serve --bg --tcp 5432 5432 2>&1
-    echo "Tailscale serve configured for PostgreSQL on port 5432"
-else
-    echo "WARNING: No authkey provided"
-fi
 sleep 5
+
+# Only register if NOT already connected (first boot)
+if ! /usr/bin/tailscale status >/dev/null 2>&1; then
+    AUTHKEY=$(cat /proc/cmdline | tr ' ' '\n' | grep tailscale.authkey | cut -d= -f2)
+    if [ -n "$AUTHKEY" ]; then
+        echo "Tailscale: First-time registration..."
+        /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-sql 2>&1
+        sleep 3
+        /usr/bin/tailscale serve --bg --tcp 5432 5432 2>&1
+    else
+        echo "WARNING: No authkey for first-time registration"
+    fi
+else
+    echo "Tailscale: Already registered, auto-reconnecting..."
+    # Ensure serve is running
+    /usr/bin/tailscale serve --bg --tcp 5432 5432 2>&1 || true
+fi
+sleep 3
 /usr/bin/tailscale status 2>&1
 
 # Start PostgreSQL
@@ -277,20 +250,7 @@ while true; do sleep 3600; done
 	exec.Command("sudo", "chmod", "+x", simpleInitPath).Run()
 	fmt.Println("  ✓ Created /sbin/simple_init (OpenRC bypass)")
 
-	// Fix 7: Create dhclient wrapper for gvforwarder
-	// TEAM_012: gvforwarder calls dhclient but Alpine uses udhcpc
-	dhclientPath := mountDir + "/usr/bin/dhclient"
-	dhclientContent := `#!/bin/sh
-# TEAM_012: dhclient wrapper - gvforwarder expects dhclient, Alpine uses udhcpc
-IFACE="${@: -1}"
-exec /sbin/udhcpc -i "$IFACE" -n -q -f -S 2>/dev/null
-`
-	dhclientCmd := fmt.Sprintf("cat > %s << 'EOFSCRIPT'\n%sEOFSCRIPT", dhclientPath, dhclientContent)
-	if err := exec.Command("sudo", "sh", "-c", dhclientCmd).Run(); err != nil {
-		return fmt.Errorf("failed to create dhclient wrapper: %w", err)
-	}
-	exec.Command("sudo", "chmod", "+x", dhclientPath).Run()
-	fmt.Println("  ✓ Created /usr/bin/dhclient wrapper")
+	// TEAM_020: Removed dhclient wrapper - gvforwarder not used anymore
 
 	fmt.Println("  ✓ Rootfs prepared for AVF")
 	return nil
