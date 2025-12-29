@@ -62,7 +62,8 @@ iptables -I FORWARD 1 -i ${TAP_NAME} -o wlan0 -j ACCEPT
 iptables -I FORWARD 2 -i wlan0 -o ${TAP_NAME} -m state --state RELATED,ESTABLISHED -j ACCEPT
 
 # Build kernel params
-KPARAMS="earlycon console=hvc0 root=/dev/vda rw init=/sbin/init.sh"
+# TEAM_023: Use ttyS0 for console - crosvm --serial captures serial port, NOT virtio hvc0
+KPARAMS="earlycon console=ttyS0 root=/dev/vda rw init=/sbin/init.sh"
 if [ -n "$TAILSCALE_AUTHKEY" ]; then
     KPARAMS="$KPARAMS tailscale.authkey=$TAILSCALE_AUTHKEY"
 fi

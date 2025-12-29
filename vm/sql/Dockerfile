@@ -1,6 +1,6 @@
 # TEAM_006: PostgreSQL VM for Sovereign Vault
 # Architecture: ARM64 (runs on Pixel 6 under pKVM)
-FROM alpine:3.32.2
+FROM alpine:3.23
 
 # Install PostgreSQL and dependencies
 # TEAM_020: Removed openrc - we use simple_init_tap which bypasses it
@@ -8,15 +8,15 @@ FROM alpine:3.32.2
 # TEAM_023: Added icu-data-full to fix musl collation bug (silent index corruption)
 # Reference: Field Guide Section 2.1 - "musl libc Divergence"
 RUN apk add --no-cache \
-    postgresql15 \
-    postgresql15-contrib \
+    postgresql \
+    postgresql-contrib \
     icu-data-full \
     iproute2 \
     curl
 
 # TEAM_011: Install Tailscale static binary (NOT Alpine package)
 # Alpine package is outdated. Download static binary directly.
-RUN TAILSCALE_VERSION="1.92.4" && \
+RUN TAILSCALE_VERSION="1.92.3" && \
     curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_arm64.tgz" -o /tmp/tailscale.tgz && \
     tar -xzf /tmp/tailscale.tgz -C /tmp && \
     cp /tmp/tailscale_${TAILSCALE_VERSION}_arm64/tailscale /usr/bin/ && \

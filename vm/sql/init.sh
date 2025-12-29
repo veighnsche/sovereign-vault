@@ -13,15 +13,32 @@
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 # DB_PASSWORD is injected by rootfs.go - DO NOT HARDCODE
 
-# TEAM_018: Log ALL output to file for debugging
+# Mount essential filesystems FIRST
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+
+# TEAM_023: Log file for debugging
 LOG=/var/log/init.log
 mkdir -p /var/log
-exec > $LOG 2>&1
-set -x
-echo "=== INIT START $(date) ==="
 
-mount -t proc proc /proc
-mount -t sysfs sysfs /sys
+# TEAM_023: Find the console device - try ttyS0 first (crosvm --serial captures this)
+CONSOLE=""
+for dev in /dev/ttyS0 /dev/console /dev/hvc0; do
+    if [ -c "$dev" ]; then
+        CONSOLE="$dev"
+        break
+    fi
+done
+
+# Log function - writes to both console device AND log file
+log() {
+    echo "$1" >> "$LOG"
+    [ -n "$CONSOLE" ] && echo "$1" > "$CONSOLE" 2>/dev/null
+}
+
+log "=== INIT START $(date) ==="
+log "Console device: $CONSOLE"
 
 # Set hostname
 hostname sovereign-sql
@@ -31,10 +48,9 @@ mkdir -p /dev/shm /tmp
 mount -t tmpfs -o mode=1777 tmpfs /dev/shm
 mount -t tmpfs tmpfs /tmp
 
-# TEAM_023: Get current time from host via kernel cmdline or use NTP after network
-# The hardcoded date was a bug - instead we'll sync after Tailscale connects
-# For now, set a reasonable recent date to avoid TLS cert "not yet valid" errors
-date -s "2025-01-01 00:00:00" 2>/dev/null || true
+# TEAM_023: Set current date for TLS cert validation
+# Must be recent enough for certificate "not before" dates
+date -s "2025-12-29 10:00:00" 2>/dev/null || true
 
 # Create device nodes
 mkdir -p /dev/net
@@ -171,7 +187,9 @@ su postgres -c "psql -c \"ALTER USER postgres PASSWORD '$DB_PASSWORD';\"" 2>&1
 echo "PostgreSQL version:"
 su postgres -c "psql -c \"SELECT version();\"" 2>&1
 
-echo "=== INIT COMPLETE ==="
+# CRITICAL: These messages are monitored by the host to detect successful boot
+log "PostgreSQL started"
+log "=== INIT COMPLETE ==="
 
 # TEAM_023: Supervision loop for BOTH Tailscale and PostgreSQL
 # If either dies (OOM, crash, anything), restart it automatically.
