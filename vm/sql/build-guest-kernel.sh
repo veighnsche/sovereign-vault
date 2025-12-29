@@ -27,9 +27,18 @@ cd "${KERNEL_DIR}/aosp"
 make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 defconfig
 
 # Enable ONLY what's needed - nothing more
+# TEAM_023: Full Field Guide compliance
+# Reference: Field Guide Section 2.2
 ./scripts/config --file "${BUILD_DIR}/.config" \
     --enable SYSVIPC \
-    --enable VIRTIO_NET
+    --enable VIRTIO \
+    --enable VIRTIO_PCI \
+    --enable VIRTIO_NET \
+    --enable VIRTIO_BLK \
+    --enable VIRTIO_VSOCKETS \
+    --enable HW_RANDOM \
+    --enable HW_RANDOM_VIRTIO \
+    --disable ANDROID_BINDER_IPC
 
 make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 olddefconfig
 make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 -j$(nproc) Image

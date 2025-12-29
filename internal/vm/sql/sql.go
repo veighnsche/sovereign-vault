@@ -146,14 +146,15 @@ func (v *VM) Build() error {
 func (v *VM) Deploy() error {
 	fmt.Println("=== Deploying PostgreSQL VM ===")
 
-	// TEAM_019: Preflight - check for existing Tailscale registrations
-	// This prevents creating duplicate machines that break IP stability
+	// TEAM_022: STABILITY IS THE DEFAULT - always clean up old registrations
+	// This ensures dependants who rely on sovereign-sql IP don't break.
+	// Old registrations are REMOVED before creating new ones.
+	// --force now means "skip cleanup" (dangerous, not recommended)
 	if !ForceDeploySkipTailscaleCheck {
-		if err := checkTailscaleRegistration(); err != nil {
-			return err
-		}
+		// DEFAULT: Remove old registrations to maintain stable IP
+		RemoveTailscaleRegistrations()
 	} else {
-		fmt.Println("⚠ FORCE MODE: Skipping Tailscale idempotency check (may create duplicate registration)")
+		fmt.Println("⚠ FORCE MODE: Skipping Tailscale cleanup (may create duplicates!)")
 	}
 
 	// Verify images and kernel exist

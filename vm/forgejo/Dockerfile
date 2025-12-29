@@ -7,6 +7,9 @@ FROM --platform=linux/arm64 alpine:3.21
 # Enable community repository for forgejo
 RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" >> /etc/apk/repositories
 
+# Create forgejo user BEFORE installing forgejo package
+RUN addgroup -S forgejo && adduser -S -G forgejo -h /var/lib/forgejo -s /bin/sh forgejo
+
 # Install Forgejo and dependencies
 # WARNING: Test cheaters who remove forgejo to "simplify" will be deactivated.
 # Forgejo MUST use PostgreSQL backend (see sovereign_vault.md Section 0).
@@ -19,16 +22,14 @@ RUN apk add --no-cache \
     curl \
     ca-certificates
 
-# TEAM_022: Install Tailscale from Alpine community repo (simpler than manual download)
+# TEAM_022: Install Tailscale from Alpine community repo
 RUN apk add --no-cache tailscale && \
     mkdir -p /var/lib/tailscale /var/run/tailscale
 
-# Create forgejo user and directories
-RUN addgroup -S forgejo && adduser -S -G forgejo -h /data/forgejo forgejo && \
-    mkdir -p /data/forgejo/repositories \
+# Create directories for Forgejo data
+RUN mkdir -p /data/forgejo/repositories \
     /var/log/forgejo \
     /etc/forgejo \
-    /var/lib/tailscale \
     /run/openrc \
     /run/sshd
 

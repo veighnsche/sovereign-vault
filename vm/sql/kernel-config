@@ -1,19 +1,27 @@
-# TEAM_018: MINIMAL kernel config for PostgreSQL VM
+# TEAM_018: Guest kernel config for PostgreSQL VM
+# TEAM_023: Full Field Guide Section 2.2 compliance
 #
-# ONLY enable what's strictly required:
-# - VIRTIO_NET: VM networking
-# - SYSVIPC: PostgreSQL shared memory (shmget)
-#
-# DO NOT ADD:
-# - Netfilter/iptables (tailscale serve doesn't need it)
-# - MARK targets (not needed with userspace networking)
-# - Any other "just in case" features
-#
-# Stock GKI kernel lacks SYSVIPC, so we must build minimal custom kernel.
+# Reference: "A Field Guide to Deploying Self-Hosted Services on Android 16 with AVF"
 
-# VM networking
+# VIRTIO transport (REQUIRED for all virtual devices)
 CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+
+# Virtual block device (root filesystem)
+CONFIG_VIRTIO_BLK=y
+
+# Virtual networking
 CONFIG_VIRTIO_NET=y
 
-# PostgreSQL shared memory (REQUIRED - shmget fails without this)
+# Host-guest communication channel
+CONFIG_VIRTIO_VSOCKETS=y
+
+# Entropy source (prevents SSH/TLS hangs)
+CONFIG_HW_RANDOM=y
+CONFIG_HW_RANDOM_VIRTIO=y
+
+# PostgreSQL shared memory
 CONFIG_SYSVIPC=y
+
+# Disable Android-specific features (reduces attack surface)
+# CONFIG_ANDROID_BINDER_IPC is not set

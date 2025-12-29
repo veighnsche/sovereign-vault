@@ -5,9 +5,12 @@ FROM alpine:3.32.2
 # Install PostgreSQL and dependencies
 # TEAM_020: Removed openrc - we use simple_init_tap which bypasses it
 # Removed iptables/ip6tables - kernel uses userspace networking (no netfilter)
+# TEAM_023: Added icu-data-full to fix musl collation bug (silent index corruption)
+# Reference: Field Guide Section 2.1 - "musl libc Divergence"
 RUN apk add --no-cache \
     postgresql15 \
     postgresql15-contrib \
+    icu-data-full \
     iproute2 \
     curl
 
@@ -41,6 +44,10 @@ RUN mkdir -p /etc/postgresql && \
 
 # Create tailscale directories
 RUN mkdir -p /etc/tailscale /var/lib/tailscale
+
+# TEAM_023: Fix musl thread stack size (default 128KB is too small for PostgreSQL)
+# Reference: Field Guide Section 2.1 - "Default Thread Stack Size"
+ENV PTHREAD_STACK_MIN=2097152
 
 # Default CMD not used - crosvm boots with init=/sbin/simple_init
 CMD ["/bin/sh"]

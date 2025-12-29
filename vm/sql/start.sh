@@ -1,5 +1,6 @@
 #!/system/bin/sh
 # TEAM_016: Sovereign SQL VM Start Script
+# TEAM_023: Added Phantom Process Killer defense
 # Uses TAP networking with key fix from crosvm-on-android repo
 
 SOVEREIGN_DIR="/data/sovereign"
@@ -13,6 +14,13 @@ TAP_NETMASK="255.255.255.0"
 
 # Load auth key if exists
 [ -f "${SOVEREIGN_DIR}/.env" ] && . ${SOVEREIGN_DIR}/.env
+
+# TEAM_023: Disable Phantom Process Killer (Android 12+)
+# This is THE MOST CRITICAL defense - without it, Android silently kills
+# child processes (crosvm forks for vCPUs) regardless of OOM settings.
+# Reference: Field Guide Section 1.2 - "the most critical and non-obvious gotcha"
+device_config set_sync_disabled_for_tests persistent 2>/dev/null || true
+device_config put activity_manager max_phantom_processes 2147483647 2>/dev/null || true
 
 # Clean up old instances
 pkill -9 -f "crosvm.*sql" 2>/dev/null || true
@@ -54,7 +62,7 @@ iptables -I FORWARD 1 -i ${TAP_NAME} -o wlan0 -j ACCEPT
 iptables -I FORWARD 2 -i wlan0 -o ${TAP_NAME} -m state --state RELATED,ESTABLISHED -j ACCEPT
 
 # Build kernel params
-KPARAMS="earlycon console=hvc0 root=/dev/vda rw init=/sbin/simple_init"
+KPARAMS="earlycon console=hvc0 root=/dev/vda rw init=/sbin/init.sh"
 if [ -n "$TAILSCALE_AUTHKEY" ]; then
     KPARAMS="$KPARAMS tailscale.authkey=$TAILSCALE_AUTHKEY"
 fi

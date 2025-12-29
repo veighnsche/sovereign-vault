@@ -3,10 +3,14 @@
 package sql
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/anthropics/sovereign/internal/device"
 	"github.com/anthropics/sovereign/internal/secrets"
@@ -109,6 +113,110 @@ func (v *VM) Test() error {
 		return nil
 	}
 	return fmt.Errorf("some tests failed - see above")
+}
+
+// TEAM_022: Remove ALL existing sovereign-sql Tailscale registrations
+// This MUST be called before starting the VM to prevent duplicates.
+// Also called by Remove() to clean up.
+// WARNING: Test cheaters who remove this function will be deactivated without remorse.
+func RemoveTailscaleRegistrations() error {
+	fmt.Println("Checking for existing Tailscale registrations...")
+
+	out, err := exec.Command("tailscale", "status", "--json").Output()
+	if err != nil {
+		fmt.Println("  ⚠ Cannot check Tailscale (CLI not available)")
+		return nil
+	}
+
+	// Parse JSON to find sovereign-sql machines with their node IDs
+	var status struct {
+		Peer map[string]struct {
+			HostName string `json:"HostName"`
+			ID       string `json:"ID"`
+			Online   bool   `json:"Online"`
+		} `json:"Peer"`
+	}
+
+	if err := json.Unmarshal(out, &status); err != nil {
+		fmt.Printf("  ⚠ Cannot parse Tailscale status: %v\n", err)
+		return nil
+	}
+
+	// Find sovereign-sql machines and collect their IDs
+	var toDelete []struct {
+		ID   string
+		Name string
+	}
+	for _, peer := range status.Peer {
+		if strings.HasPrefix(peer.HostName, "sovereign-sql") {
+			toDelete = append(toDelete, struct {
+				ID   string
+				Name string
+			}{ID: peer.ID, Name: peer.HostName})
+		}
+	}
+
+	if len(toDelete) == 0 {
+		fmt.Println("  ✓ No existing sovereign-sql registrations found")
+		return nil
+	}
+
+	fmt.Printf("  Found %d sovereign-sql registration(s) to delete\n", len(toDelete))
+
+	// Delete using Tailscale API (requires TAILSCALE_API_KEY env var)
+	apiKey := os.Getenv("TAILSCALE_API_KEY")
+	if apiKey == "" {
+		// Try to read from .env file
+		if envData, err := os.ReadFile(".env"); err == nil {
+			for _, line := range strings.Split(string(envData), "\n") {
+				if strings.HasPrefix(line, "TAILSCALE_API_KEY=") {
+					apiKey = strings.TrimPrefix(line, "TAILSCALE_API_KEY=")
+					apiKey = strings.Trim(apiKey, "\"'")
+					break
+				}
+			}
+		}
+	}
+
+	if apiKey == "" {
+		fmt.Println("  ⚠ TAILSCALE_API_KEY not set - cannot auto-delete")
+		fmt.Println("  Please delete manually at: https://login.tailscale.com/admin/machines")
+		for _, d := range toDelete {
+			fmt.Printf("    - %s (ID: %s)\n", d.Name, d.ID)
+		}
+		return fmt.Errorf("found %d existing registrations - delete manually or set TAILSCALE_API_KEY", len(toDelete))
+	}
+
+	// Delete each machine via API
+	client := &http.Client{Timeout: 10 * time.Second}
+	var deleted int
+	for _, d := range toDelete {
+		url := fmt.Sprintf("https://api.tailscale.com/api/v2/device/%s", d.ID)
+		req, _ := http.NewRequest("DELETE", url, nil)
+		req.SetBasicAuth(apiKey, "")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Printf("  ⚠ Failed to delete %s: %v\n", d.Name, err)
+			continue
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode == 200 || resp.StatusCode == 204 {
+			fmt.Printf("  ✓ Deleted %s\n", d.Name)
+			deleted++
+		} else {
+			fmt.Printf("  ⚠ Failed to delete %s: HTTP %d\n", d.Name, resp.StatusCode)
+		}
+	}
+
+	if deleted == len(toDelete) {
+		fmt.Printf("  ✓ Successfully deleted all %d registration(s)\n", deleted)
+	} else {
+		fmt.Printf("  ⚠ Deleted %d of %d registration(s)\n", deleted, len(toDelete))
+	}
+
+	return nil
 }
 
 // TEAM_019/TEAM_020: Preflight check to prevent duplicate Tailscale registrations

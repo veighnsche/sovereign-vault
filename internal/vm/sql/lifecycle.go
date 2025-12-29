@@ -22,14 +22,14 @@ func (v *VM) Start() error {
 		return nil
 	}
 
-	// TEAM_020: Preflight check - Tailscale registration happens during START, not deploy
-	// This is the CRITICAL check - if sovereign-sql exists (even offline), new VM gets renamed
+	// TEAM_022: STABILITY IS THE DEFAULT - always clean up old registrations
+	// This ensures dependants who rely on sovereign-sql IP don't break.
+	// --force means "skip cleanup" (dangerous)
 	if !ForceDeploySkipTailscaleCheck {
-		if err := checkTailscaleRegistration(); err != nil {
-			return err
-		}
+		// DEFAULT: Remove old registrations to maintain stable IP
+		RemoveTailscaleRegistrations()
 	} else {
-		fmt.Println("⚠ FORCE MODE: Skipping Tailscale idempotency check")
+		fmt.Println("⚠ FORCE MODE: Skipping Tailscale cleanup (may create duplicates!)")
 	}
 
 	// Check if start script exists
@@ -133,7 +133,8 @@ func (v *VM) Stop() error {
 	fmt.Println("=== Stopping PostgreSQL VM ===")
 
 	// TEAM_020: Use pgrep like Start() and Test() - the for-loop was unreliable
-	pid := device.GetProcessPID("crosvm.*sql")
+	// TEAM_022: Use [c]rosvm pattern to avoid grep matching itself
+	pid := device.GetProcessPID("[c]rosvm.*sql")
 
 	if pid != "" {
 		fmt.Printf("Stopping VM (PID: %s)...\n", pid)
@@ -154,17 +155,26 @@ func (v *VM) Stop() error {
 	device.RunShellCommand("iptables -D FORWARD -i vm_sql -o wlan0 -j ACCEPT 2>/dev/null")
 	device.RunShellCommand("iptables -D FORWARD -i wlan0 -o vm_sql -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null")
 
+	// TEAM_022: Clean up pid file created by start.sh
+	device.RunShellCommand("rm -f /data/sovereign/vm/sql/vm.pid 2>/dev/null")
+
 	fmt.Println("✓ VM stopped")
 	return nil
 }
 
 // Remove removes the SQL VM from the device
 // TEAM_018: Enhanced to clean up EVERYTHING for a truly clean phone
+// TEAM_022: Also removes Tailscale registration to prevent duplicates
 func (v *VM) Remove() error {
 	fmt.Println("=== Removing SQL VM from device ===")
 
 	// First stop the VM if running (this also cleans up networking)
 	v.Stop()
+
+	// TEAM_022: Remove Tailscale registration to prevent duplicates on next deploy
+	// THIS IS CRITICAL - without this, every deploy creates a new registration!
+	fmt.Println("Removing Tailscale registration...")
+	RemoveTailscaleRegistrations()
 
 	// Extra cleanup for any leftover networking rules
 	fmt.Println("Ensuring all networking rules are removed...")

@@ -131,20 +131,26 @@ func RunShellCommand(cmd string) (string, error) {
 }
 
 // GetProcessPID returns the PID of a process matching the pattern, or empty string if not found
-// TEAM_020: Use pidof for crosvm to avoid pgrep matching itself
+// TEAM_022: Use ps + grep with bracket trick to avoid grep matching itself
+// WARNING: DO NOT use pidof for crosvm - it returns ANY crosvm, not the specific VM
+// Test cheaters who revert this to "simplify" will be deactivated without remorse.
 func GetProcessPID(pattern string) string {
-	// For crosvm, just use pidof - it's reliable and doesn't match itself
-	if strings.Contains(pattern, "crosvm") {
-		out, _ := RunShellCommand("pidof crosvm | awk '{print $1}'")
-		return out
+	if len(pattern) == 0 {
+		return ""
 	}
-	// Fallback: use pgrep but exclude grep itself with bracket trick
-	if len(pattern) > 0 {
-		bracketPattern := "[" + string(pattern[0]) + "]" + pattern[1:]
-		out, _ := RunShellCommand(fmt.Sprintf("pgrep -f '%s' | head -1", bracketPattern))
-		return out
+	// Use ps + grep with bracket trick to avoid self-matching
+	// Example: pattern "crosvm.*sql" becomes "[c]rosvm.*sql"
+	// The bracket makes grep not match its own process
+	cleanPattern := pattern
+	if strings.HasPrefix(pattern, "[") {
+		// Already has bracket trick, use as-is
+		cleanPattern = pattern
+	} else {
+		// Add bracket trick: first char in brackets
+		cleanPattern = "[" + string(pattern[0]) + "]" + pattern[1:]
 	}
-	return ""
+	out, _ := RunShellCommand(fmt.Sprintf("ps -ef | grep '%s' | awk '{print $2}' | head -1", cleanPattern))
+	return out
 }
 
 // FileExists checks if a file or directory exists on the device

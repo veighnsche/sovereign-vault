@@ -25,8 +25,8 @@ Feature: Forge VM Lifecycle
     Given a device is connected
     And the Forge VM is built
     When I deploy the Forge VM
-    Then the VM directory should exist on device at "/data/sovereign/vm/forge"
-    And the start script should exist at "/data/sovereign/vm/forge/start.sh"
+    Then the VM directory should exist on device at "/data/sovereign/forgejo"
+    And the start script should exist at "/data/sovereign/forgejo/start.sh"
 
   @deploy
   Scenario: Forge uses unique subnet

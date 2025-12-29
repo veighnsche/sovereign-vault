@@ -40,8 +40,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anthropics/sovereign/internal/vm/sql"
 	"github.com/cucumber/godog"
 )
+
+// resetGlobalFlags resets package-level flags to ensure test isolation
+// TEAM_022: Without this, deploy --force affects subsequent start tests
+func resetGlobalFlags() {
+	sql.ForceDeploySkipTailscaleCheck = false
+}
 
 // TestState holds all state shared between steps in a scenario
 // Each scenario gets a fresh instance via the Before hook
@@ -300,14 +307,13 @@ func (s *TestState) iTryToBuildTheForgeVM(ctx context.Context) error {
 
 func (s *TestState) iDeployTheSQLVM(ctx context.Context) error {
 	s.vmType = "sql"
-	// TEAM_022: Use --force to skip Tailscale idempotency check during testing
-	// This is NOT cheating - we're testing deploy functionality, not Tailscale registration
-	// The Tailscale check is tested separately in "Start checks Tailscale registration"
-	return s.runCommand("deploy", "--sql", "--force")
+	// TEAM_022: No --force needed - stability (auto-cleanup) is now the default
+	return s.runCommand("deploy", "--sql")
 }
 
 func (s *TestState) iDeployTheForgeVM(ctx context.Context) error {
 	s.vmType = "forge"
+	// TEAM_022: No --force needed - stability (auto-cleanup) is now the default
 	return s.runCommand("deploy", "--forge")
 }
 

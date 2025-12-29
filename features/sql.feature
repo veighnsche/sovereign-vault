@@ -120,21 +120,23 @@ Feature: SQL VM Lifecycle
     And no new process should be started
 
   @start @tailscale
-  Scenario: Start checks Tailscale registration
+  Scenario: Start auto-cleans old Tailscale registrations
     Given a device is connected
     And the SQL VM is deployed
     And a Tailscale registration exists for "sovereign-sql"
-    When I try to start the SQL VM
-    Then the start should fail with "TAILSCALE IDEMPOTENCY CHECK FAILED"
+    When I start the SQL VM
+    Then the old registration should be removed
+    And a new registration should be created
+    And the VM should start
 
   @start @tailscale @force
-  Scenario: Start with force skips Tailscale check
+  Scenario: Start with force skips Tailscale cleanup
     Given a device is connected
     And the SQL VM is deployed
     And a Tailscale registration exists for "sovereign-sql"
     When I start the SQL VM with force flag
-    Then the Tailscale check should be skipped
-    And the VM should start
+    Then the Tailscale cleanup should be skipped
+    And duplicate registrations may be created
 
   @start @timeout
   Scenario: Start times out after 90 seconds
