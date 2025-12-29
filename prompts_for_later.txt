@@ -1,0 +1,17 @@
+Don't forget that we are on a x64 machine targeting an arm64 device
+
+You know what I missed... what about find out about ALL the current behaviors in the SQL build/deploy/start/status/test/stop/remove commands in sovereign... and we need to test EACH BEHAVIOR in a test file.... THEN we need all the same behaviors for forgej
+
+---
+
+Now also make sure that forgejo is ACTUALLY CONNECTED TO POSTGRESQL through tailscale vpn
+
+---
+
+Now please do the entire stuff
+
+build -> deploy -> start -> status -> test -> stop -> remove
+
+And everything has to work as expected...
+
+PLEASE START IMPLEMENTING EVERYTHING UNTIL TEST TEST PASSES COMPLETELY!

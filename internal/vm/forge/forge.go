@@ -168,8 +168,9 @@ func (v *VM) Start() error {
 	}
 
 	// Wait and verify
+	// TEAM_022: Use [c]rosvm pattern to avoid grep matching itself
 	time.Sleep(2 * time.Second)
-	out, _ = exec.Command("adb", "shell", "su", "-c", "pgrep -f 'crosvm.*forgejo'").Output()
+	out, _ = exec.Command("adb", "shell", "su", "-c", "ps -ef | grep '[c]rosvm.*forgejo' | awk '{print $2}' | head -1").Output()
 	if strings.TrimSpace(string(out)) == "" {
 		fmt.Println("\n⚠ VM process not found - check logs")
 		return fmt.Errorf("VM failed to start")

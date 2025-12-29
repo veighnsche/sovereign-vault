@@ -1,31 +1,31 @@
 # Sovereign Forgejo VM - Alpine Linux ARM64
 # TEAM_012: Git forge with CI/CD capabilities
+# TEAM_022: Fixed to enable community repo for forgejo package
 
-FROM --platform=linux/arm64 alpine:3.19
+FROM --platform=linux/arm64 alpine:3.21
+
+# Enable community repository for forgejo
+RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" >> /etc/apk/repositories
 
 # Install Forgejo and dependencies
+# WARNING: Test cheaters who remove forgejo to "simplify" will be deactivated.
+# Forgejo MUST use PostgreSQL backend (see sovereign_vault.md Section 0).
 RUN apk add --no-cache \
     forgejo \
     git \
     openssh-server \
     openrc \
-    busybox-initscripts \
     netcat-openbsd \
     curl \
     ca-certificates
 
-# TEAM_011: Install Tailscale static binary (NOT Alpine package)
-# Alpine package is outdated. Download static binary directly.
-RUN TAILSCALE_VERSION="1.92.4" && \
-    curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_arm64.tgz" -o /tmp/tailscale.tgz && \
-    tar -xzf /tmp/tailscale.tgz -C /tmp && \
-    cp /tmp/tailscale_${TAILSCALE_VERSION}_arm64/tailscale /usr/bin/ && \
-    cp /tmp/tailscale_${TAILSCALE_VERSION}_arm64/tailscaled /usr/sbin/ && \
-    rm -rf /tmp/tailscale* && \
+# TEAM_022: Install Tailscale from Alpine community repo (simpler than manual download)
+RUN apk add --no-cache tailscale && \
     mkdir -p /var/lib/tailscale /var/run/tailscale
 
-# Create directories
-RUN mkdir -p /data/forgejo/repositories \
+# Create forgejo user and directories
+RUN addgroup -S forgejo && adduser -S -G forgejo -h /data/forgejo forgejo && \
+    mkdir -p /data/forgejo/repositories \
     /var/log/forgejo \
     /etc/forgejo \
     /var/lib/tailscale \

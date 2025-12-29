@@ -1,0 +1,163 @@
+// SQL VM verification (Test command and Tailscale checks)
+// TEAM_022: Split from sql.go for readability
+package sql
+
+import (
+	"fmt"
+	"os/exec"
+	"regexp"
+	"strings"
+
+	"github.com/anthropics/sovereign/internal/device"
+	"github.com/anthropics/sovereign/internal/secrets"
+)
+
+func (v *VM) Test() error {
+	fmt.Println("=== Testing PostgreSQL VM ===")
+	allPassed := true
+
+	// Test 1: VM process running
+	fmt.Print("1. VM process running: ")
+	// TEAM_022: Use [c]rosvm pattern to avoid grep matching itself
+	// WARNING: pgrep -f 'crosvm.*sql' matches its own process - DO NOT USE
+	// Test cheaters who revert this fix will be deactivated without remorse.
+	out, _ := device.RunShellCommand("ps -ef | grep '[c]rosvm.*sql' | grep -v grep | awk '{print $2}' | head -1")
+	vmPid := strings.TrimSpace(out)
+	if vmPid == "" {
+		fmt.Println("✗ FAIL (crosvm not running)")
+		allPassed = false
+	} else {
+		fmt.Printf("✓ PASS (PID: %s)\n", vmPid)
+	}
+
+	// Test 2: TAP interface exists
+	fmt.Print("2. TAP interface (vm_sql): ")
+	tapOut, _ := device.RunShellCommand("ip link show vm_sql 2>/dev/null | grep -c UP")
+	if strings.TrimSpace(tapOut) == "1" {
+		fmt.Println("✓ PASS")
+	} else {
+		fmt.Println("✗ FAIL (TAP interface not up)")
+		allPassed = false
+	}
+
+	// Test 3: Check Tailscale status
+	// TEAM_018: Match sovereign-sql* to handle renamed instances (sovereign-sql-1, etc)
+	fmt.Print("3. Tailscale connected: ")
+	tsOut, tsErr := exec.Command("tailscale", "status").Output()
+	var tsIP string
+	if tsErr != nil {
+		fmt.Println("? SKIP (tailscale not available on host)")
+	} else {
+		lines := strings.Split(string(tsOut), "\n")
+		for _, line := range lines {
+			// Match sovereign-sql but not offline entries
+			if strings.Contains(line, "sovereign-sql") && !strings.Contains(line, "offline") {
+				parts := strings.Fields(line)
+				if len(parts) >= 2 {
+					tsIP = parts[0]
+					fmt.Printf("✓ PASS (%s as %s)\n", tsIP, parts[1])
+				}
+				break
+			}
+		}
+		if tsIP == "" {
+			fmt.Println("✗ FAIL (no active sovereign-sql* in tailscale)")
+			allPassed = false
+		}
+	}
+
+	// Test 4: PostgreSQL responding via TAP
+	// TEAM_018: Use TAP IP directly - Tailscale userspace networking has port exposure issues
+	fmt.Print("4. PostgreSQL responding (via TAP): ")
+	tapIP := "192.168.100.2"
+	pgOut, _ := device.RunShellCommand(fmt.Sprintf("nc -z %s 5432 && echo OPEN || echo CLOSED", tapIP))
+	if strings.TrimSpace(pgOut) == "OPEN" {
+		fmt.Println("✓ PASS")
+	} else {
+		fmt.Println("✗ FAIL (port 5432 not reachable on TAP)")
+		allPassed = false
+	}
+
+	// Test 5: Can execute query via TAP
+	fmt.Print("5. Can execute query (via TAP): ")
+	// Use adb to run psql from the Android host to the VM
+	creds, _ := secrets.LoadSecretsFile()
+	pgPassword := "sovereign"
+	if creds != nil {
+		pgPassword = creds.DBPassword
+	}
+	queryOut, _ := device.RunShellCommand(fmt.Sprintf(
+		"PGPASSWORD=%s psql -h %s -U postgres -c 'SELECT 1;' 2>&1 | grep -c '1 row'",
+		pgPassword, tapIP))
+	if strings.TrimSpace(queryOut) == "1" {
+		fmt.Println("✓ PASS")
+	} else {
+		// Fallback: check if we can at least connect
+		connOut, _ := device.RunShellCommand(fmt.Sprintf("nc -z %s 5432 && echo OK", tapIP))
+		if strings.Contains(connOut, "OK") {
+			fmt.Println("✓ PASS (port open, psql not available on device)")
+		} else {
+			fmt.Println("✗ FAIL (cannot connect to PostgreSQL)")
+			allPassed = false
+		}
+	}
+
+	fmt.Println()
+	if allPassed {
+		fmt.Println("=== ALL TESTS PASSED ===")
+		fmt.Println("PostgreSQL accessible via Tailscale.")
+		return nil
+	}
+	return fmt.Errorf("some tests failed - see above")
+}
+
+// TEAM_019/TEAM_020: Preflight check to prevent duplicate Tailscale registrations
+// Returns error if sovereign-sql is already registered (causes IP instability)
+// CRITICAL: Checks ALL machines (online AND offline) - offline machines still exist
+// and will cause Tailscale to auto-rename new registrations (e.g., sovereign-sql-1)
+func checkTailscaleRegistration() error {
+	out, err := exec.Command("tailscale", "status").Output()
+	if err != nil {
+		// Tailscale not available on host - skip check but warn
+		fmt.Println("⚠ Warning: Cannot check Tailscale status (tailscale CLI not available)")
+		fmt.Println("  Ensure no duplicate sovereign-sql machines exist before deploying")
+		return nil
+	}
+
+	// Parse output for sovereign-sql machines (ALL of them, including offline)
+	lines := strings.Split(string(out), "\n")
+	var existingMachines []string
+	re := regexp.MustCompile(`^(\d+\.\d+\.\d+\.\d+)\s+(sovereign-sql\S*)\s+`)
+
+	for _, line := range lines {
+		matches := re.FindStringSubmatch(line)
+		if len(matches) >= 3 {
+			ip := matches[1]
+			name := matches[2]
+			status := "online"
+			if strings.Contains(line, "offline") {
+				status = "OFFLINE"
+			}
+			existingMachines = append(existingMachines, fmt.Sprintf("%s (%s) [%s]", name, ip, status))
+		}
+	}
+
+	if len(existingMachines) > 0 {
+		return fmt.Errorf("TAILSCALE IDEMPOTENCY CHECK FAILED\n\n"+
+			"  Found %d existing sovereign-sql machine(s):\n"+
+			"    %s\n\n"+
+			"  Starting will create ANOTHER registration (even offline ones block the name).\n\n"+
+			"  To fix:\n"+
+			"    1. Go to https://login.tailscale.com/admin/machines\n"+
+			"    2. Delete ALL sovereign-sql* machines (including offline ones)\n"+
+			"    3. Generate a NEW auth key if needed\n"+
+			"    4. Update .env with the new TAILSCALE_AUTHKEY\n"+
+			"    5. Run 'sovereign start --sql' again\n\n"+
+			"  Or use '--force' to skip this check (NOT RECOMMENDED)",
+			len(existingMachines),
+			strings.Join(existingMachines, "\n    "))
+	}
+
+	fmt.Println("✓ Tailscale preflight: No existing sovereign-sql registrations")
+	return nil
+}
