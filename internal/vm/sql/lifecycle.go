@@ -22,15 +22,17 @@ func (v *VM) Start() error {
 		return nil
 	}
 
-	// TEAM_022: STABILITY IS THE DEFAULT - always clean up old registrations
-	// This ensures dependants who rely on sovereign-sql IP don't break.
-	// --force means "skip cleanup" (dangerous)
-	if !ForceDeploySkipTailscaleCheck {
-		// DEFAULT: Remove old registrations to maintain stable IP
-		RemoveTailscaleRegistrations()
-	} else {
-		fmt.Println("⚠ FORCE MODE: Skipping Tailscale cleanup (may create duplicates!)")
-	}
+	// ============================================================================
+	// TEAM_023: DON'T delete Tailscale registrations when using persistent storage!
+	// ============================================================================
+	// The VM now stores Tailscale state on data.img (persistent disk).
+	// Machine identity survives rebuilds - no need to delete and re-register.
+	// The VM will reconnect using its saved credentials.
+	//
+	// RemoveTailscaleRegistrations() is now only used for explicit cleanup
+	// via `sovereign remove --sql`, not on every start.
+	// ============================================================================
+	fmt.Println("Tailscale: Using persistent machine identity (no cleanup needed)")
 
 	// Check if start script exists
 	if !device.FileExists("/data/sovereign/vm/sql/start.sh") {
@@ -165,6 +167,12 @@ func (v *VM) Stop() error {
 // Remove removes the SQL VM from the device
 // TEAM_018: Enhanced to clean up EVERYTHING for a truly clean phone
 // TEAM_022: Also removes Tailscale registration to prevent duplicates
+//
+// ============================================================================
+// BUG: Tailscale cleanup here DOES NOT prevent duplicate registrations!
+// See verify.go RemoveTailscaleRegistrations() for full bug documentation.
+// User has asked 10+ times. Bug persists. Duplicates keep appearing.
+// ============================================================================
 func (v *VM) Remove() error {
 	fmt.Println("=== Removing SQL VM from device ===")
 
@@ -172,7 +180,7 @@ func (v *VM) Remove() error {
 	v.Stop()
 
 	// TEAM_022: Remove Tailscale registration to prevent duplicates on next deploy
-	// THIS IS CRITICAL - without this, every deploy creates a new registration!
+	// WARNING: This does NOT actually prevent duplicates! Bug persists!
 	fmt.Println("Removing Tailscale registration...")
 	RemoveTailscaleRegistrations()
 

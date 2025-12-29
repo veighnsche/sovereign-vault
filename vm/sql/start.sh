@@ -69,11 +69,14 @@ if [ -n "$TAILSCALE_AUTHKEY" ]; then
 fi
 
 # Start VM with TAP networking
+# TEAM_023: Added data.img as second block device (/dev/vdb) for persistent storage
+# This is CRITICAL for Tailscale machine identity to survive rebuilds!
 $CROSVM run \
     --disable-sandbox \
     --mem 1024 \
     --cpus 2 \
     --block path="${VM_DIR}/rootfs.img",root \
+    --block path="${VM_DIR}/data.img" \
     --params "$KPARAMS" \
     --serial type=stdout \
     --net tap-name=${TAP_NAME} \

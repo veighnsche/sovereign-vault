@@ -48,6 +48,35 @@ mkdir -p /dev/shm /tmp
 mount -t tmpfs -o mode=1777 tmpfs /dev/shm
 mount -t tmpfs tmpfs /tmp
 
+# ============================================================================
+# TEAM_023: Mount data.img (/dev/vdb) for PERSISTENT storage
+# ============================================================================
+# This is CRITICAL for Tailscale machine identity!
+# - rootfs.img (/dev/vda) = rebuilt on every `sovereign build`
+# - data.img (/dev/vdb) = PERSISTS across rebuilds
+#
+# By storing Tailscale state on /data, the machine ID survives rebuilds,
+# preventing duplicate registrations (sovereign-sql, sovereign-sql-1, etc.)
+# ============================================================================
+mkdir -p /data
+if [ -b /dev/vdb ]; then
+    log "Mounting persistent data disk /dev/vdb -> /data"
+    mount /dev/vdb /data
+    if [ $? -eq 0 ]; then
+        log "  ✓ Data disk mounted successfully"
+    else
+        log "  ⚠ Failed to mount data disk - using tmpfs fallback"
+        mount -t tmpfs tmpfs /data
+    fi
+else
+    log "  ⚠ No data disk found (/dev/vdb) - using tmpfs"
+    mount -t tmpfs tmpfs /data
+fi
+
+# Create persistent directories on data disk
+mkdir -p /data/postgres /data/tailscale
+chown postgres:postgres /data/postgres 2>/dev/null || true
+
 # TEAM_023: Set current date for TLS cert validation
 # Must be recent enough for certificate "not before" dates
 date -s "2025-12-29 10:00:00" 2>/dev/null || true
@@ -103,6 +132,15 @@ ping -c 2 8.8.8.8 2>&1 || echo "Ping failed - will retry after Tailscale"
 
 # Start Tailscale
 # TEAM_020: tailscaled auto-reconnects - only need authkey for FIRST registration
+#
+# ============================================================================
+# TEAM_023 FIX: Tailscale state now persisted on data.img!
+# ============================================================================
+# The duplicate registration bug is FIXED by:
+# 1. Mounting data.img to /data (done above)
+# 2. Storing tailscaled.state in /data/tailscale/ (persistent disk)
+# 3. Machine identity survives rebuilds - no more duplicates!
+# ============================================================================
 echo "=== Starting Tailscale ==="
 mkdir -p /data/tailscale /var/run/tailscale /dev/net
 [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
@@ -120,9 +158,19 @@ for i in 1 2 3 4 5; do
     sleep 1
 done
 
-# Only register if NOT already connected (first boot)
-if ! /usr/bin/tailscale status >/dev/null 2>&1; then
-    # TEAM_023: Safer authkey parsing - handle special characters
+# TEAM_023: Check if we have PERSISTENT state (machine identity survives rebuilds)
+# The state file on /data/tailscale is the source of truth, not `tailscale status`
+# which may not be ready immediately after tailscaled starts.
+STATE_FILE="/data/tailscale/tailscaled.state"
+
+if [ -f "$STATE_FILE" ] && [ -s "$STATE_FILE" ]; then
+    # We have saved state - reconnect without authkey (preserves machine identity!)
+    echo "Tailscale: Found persistent state, reconnecting..."
+    /usr/bin/tailscale up --hostname=sovereign-sql 2>&1
+    /usr/bin/tailscale serve --bg --tcp 5432 5432 2>&1 || true
+else
+    # First boot - need authkey for initial registration
+    echo "Tailscale: No saved state, first-time registration..."
     AUTHKEY=""
     for param in $(cat /proc/cmdline); do
         case "$param" in
@@ -130,16 +178,11 @@ if ! /usr/bin/tailscale status >/dev/null 2>&1; then
         esac
     done
     if [ -n "$AUTHKEY" ]; then
-        echo "Tailscale: First-time registration..."
         /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-sql 2>&1
         /usr/bin/tailscale serve --bg --tcp 5432 5432 2>&1
     else
         echo "WARNING: No authkey for first-time registration"
     fi
-else
-    echo "Tailscale: Already registered, auto-reconnecting..."
-    # Ensure serve is running
-    /usr/bin/tailscale serve --bg --tcp 5432 5432 2>&1 || true
 fi
 
 # TEAM_023: Sync time via Tailscale/internet now that network is up

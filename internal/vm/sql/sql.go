@@ -146,16 +146,14 @@ func (v *VM) Build() error {
 func (v *VM) Deploy() error {
 	fmt.Println("=== Deploying PostgreSQL VM ===")
 
-	// TEAM_022: STABILITY IS THE DEFAULT - always clean up old registrations
-	// This ensures dependants who rely on sovereign-sql IP don't break.
-	// Old registrations are REMOVED before creating new ones.
-	// --force now means "skip cleanup" (dangerous, not recommended)
-	if !ForceDeploySkipTailscaleCheck {
-		// DEFAULT: Remove old registrations to maintain stable IP
-		RemoveTailscaleRegistrations()
-	} else {
-		fmt.Println("⚠ FORCE MODE: Skipping Tailscale cleanup (may create duplicates!)")
-	}
+	// ============================================================================
+	// TEAM_023: DON'T delete Tailscale registrations on deploy!
+	// ============================================================================
+	// The VM now stores Tailscale state on data.img (persistent disk).
+	// Machine identity survives rebuilds - no need to delete and re-register.
+	// RemoveTailscaleRegistrations() is only used in `sovereign remove --sql`.
+	// ============================================================================
+	fmt.Println("Tailscale: Using persistent machine identity (no cleanup needed)")
 
 	// Verify images and kernel exist
 	requiredFiles := []string{"vm/sql/rootfs.img", "vm/sql/data.img", "vm/sql/Image"}

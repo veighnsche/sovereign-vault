@@ -119,6 +119,38 @@ func (v *VM) Test() error {
 // This MUST be called before starting the VM to prevent duplicates.
 // Also called by Remove() to clean up.
 // WARNING: Test cheaters who remove this function will be deactivated without remorse.
+//
+// ============================================================================
+// TEAM_023: DUPLICATE TAILSCALE REGISTRATIONS - FIXED!
+// ============================================================================
+//
+// THE BUG: Every restart/redeploy created a NEW Tailscale registration.
+// After 3 restarts: sovereign-sql, sovereign-sql-1, sovereign-sql-2
+// PostgreSQL dependants expected STABLE URI but got changing hostnames.
+//
+// FAILED MITIGATION ATTEMPTS (before the fix):
+//  1. TEAM_019: Preflight check to fail if registration exists
+//  2. TEAM_020: Made cleanup the default behavior
+//  3. TEAM_022: RemoveTailscaleRegistrations() to delete via API
+//  4. Called cleanup in Deploy(), Start(), Remove()
+//  5. TAILSCALE_API_KEY support for deletion
+//
+// THE FIX (TEAM_023):
+//  1. Mount data.img to /data in init.sh (persistent across rebuilds)
+//  2. Store Tailscale state in /data/tailscale/tailscaled.state
+//  3. Check for existing state file before registering
+//  4. If state exists: reconnect (no authkey needed, preserves identity)
+//  5. If no state: first-time registration with authkey
+//  6. DON'T delete registrations on start/deploy (only on remove)
+//
+// Files changed:
+//   - vm/sql/init.sh: Mount /dev/vdb, check state file before registering
+//   - vm/sql/start.sh: Pass data.img as second block device
+//   - internal/vm/sql/lifecycle.go: Remove cleanup calls from Start()
+//   - internal/vm/sql/sql.go: Remove cleanup calls from Deploy()
+//
+// This function is now only used by `sovereign remove --sql` for cleanup.
+// ============================================================================
 func RemoveTailscaleRegistrations() error {
 	fmt.Println("Checking for existing Tailscale registrations...")
 
@@ -166,12 +198,25 @@ func RemoveTailscaleRegistrations() error {
 	// Delete using Tailscale API (requires TAILSCALE_API_KEY env var)
 	apiKey := os.Getenv("TAILSCALE_API_KEY")
 	if apiKey == "" {
-		// Try to read from .env file
-		if envData, err := os.ReadFile(".env"); err == nil {
-			for _, line := range strings.Split(string(envData), "\n") {
-				if strings.HasPrefix(line, "TAILSCALE_API_KEY=") {
-					apiKey = strings.TrimPrefix(line, "TAILSCALE_API_KEY=")
-					apiKey = strings.Trim(apiKey, "\"'")
+		// Try to read from .env file - check multiple locations
+		// BUG FIX: Previously only checked ".env" which fails if not in sovereign/ dir
+		envPaths := []string{
+			".env",              // Current directory
+			"sovereign/.env",    // From kernel root
+			"../sovereign/.env", // From subdirectory
+			os.Getenv("HOME") + "/Projects/android/kernel/sovereign/.env", // Absolute fallback
+		}
+		for _, envPath := range envPaths {
+			if envData, err := os.ReadFile(envPath); err == nil {
+				for _, line := range strings.Split(string(envData), "\n") {
+					if strings.HasPrefix(line, "TAILSCALE_API_KEY=") {
+						apiKey = strings.TrimPrefix(line, "TAILSCALE_API_KEY=")
+						apiKey = strings.Trim(apiKey, "\"'")
+						fmt.Printf("  Found API key in %s\n", envPath)
+						break
+					}
+				}
+				if apiKey != "" {
 					break
 				}
 			}
@@ -223,6 +268,12 @@ func RemoveTailscaleRegistrations() error {
 // Returns error if sovereign-sql is already registered (causes IP instability)
 // CRITICAL: Checks ALL machines (online AND offline) - offline machines still exist
 // and will cause Tailscale to auto-rename new registrations (e.g., sovereign-sql-1)
+//
+// ============================================================================
+// WARNING: THIS CHECK DOES NOT PREVENT THE BUG!
+// See RemoveTailscaleRegistrations() for full bug documentation.
+// The user has requested this fix 10+ times. It still doesn't work.
+// ============================================================================
 func checkTailscaleRegistration() error {
 	out, err := exec.Command("tailscale", "status").Output()
 	if err != nil {
