@@ -105,9 +105,9 @@ chmod 600 /dev/console 2>/dev/null
 	// TEAM_023: Script extracted to vm/sql/init.sh for maintainability
 	initScriptPath := mountDir + "/sbin/init.sh"
 
-	// Find the simple_init.sh script relative to the sovereign directory
-	// We walk up from the current working directory to find it
-	scriptPath, err := findInitScript()
+	// Find the init.sh script relative to the sovereign directory
+	// TEAM_025: Now VM-agnostic - uses rootfsPath to determine which init.sh to use
+	scriptPath, err := findInitScript(rootfsPath)
 	if err != nil {
 		return fmt.Errorf("failed to find init.sh: %w", err)
 	}
@@ -134,7 +134,7 @@ chmod 600 /dev/console 2>/dev/null
 	exec.Command("sudo", "chmod", "+x", initScriptPath).Run()
 	// Also symlink to /sbin/init for kernel's default init path
 	exec.Command("sudo", "ln", "-sf", "/sbin/init.sh", mountDir+"/sbin/init").Run()
-	fmt.Println("  ✓ Created /sbin/init.sh (from vm/sql/init.sh)")
+	fmt.Printf("  ✓ Created /sbin/init.sh (from %s)\n", scriptPath)
 
 	// TEAM_020: Removed dhclient wrapper - gvforwarder not used anymore
 
@@ -142,14 +142,21 @@ chmod 600 /dev/console 2>/dev/null
 	return nil
 }
 
-// findInitScript locates the init.sh script in the sovereign/vm/sql directory
-func findInitScript() (string, error) {
+// findInitScript locates the init.sh script based on the rootfs path
+// TEAM_025: Made VM-agnostic to support both SQL and Forge VMs
+func findInitScript(rootfsPath string) (string, error) {
+	// Determine VM type from rootfs path
+	vmType := "sql" // default
+	if strings.Contains(rootfsPath, "forgejo") {
+		vmType = "forgejo"
+	}
+
 	// Try common locations relative to working directory
 	candidates := []string{
-		"vm/sql/init.sh",           // Running from sovereign/
-		"sovereign/vm/sql/init.sh", // Running from kernel/
-		"../vm/sql/init.sh",        // Running from sovereign/internal/
-		"../../vm/sql/init.sh",     // Running from sovereign/internal/rootfs/
+		fmt.Sprintf("vm/%s/init.sh", vmType),           // Running from sovereign/
+		fmt.Sprintf("sovereign/vm/%s/init.sh", vmType), // Running from kernel/
+		fmt.Sprintf("../vm/%s/init.sh", vmType),        // Running from sovereign/internal/
+		fmt.Sprintf("../../vm/%s/init.sh", vmType),     // Running from sovereign/internal/rootfs/
 	}
 
 	for _, path := range candidates {
@@ -165,7 +172,7 @@ func findInitScript() (string, error) {
 		goMod := filepath.Join(dir, "go.mod")
 		if _, err := os.Stat(goMod); err == nil {
 			// Found sovereign root
-			scriptPath := filepath.Join(dir, "vm", "sql", "init.sh")
+			scriptPath := filepath.Join(dir, "vm", vmType, "init.sh")
 			if _, err := os.Stat(scriptPath); err == nil {
 				return scriptPath, nil
 			}
@@ -173,5 +180,5 @@ func findInitScript() (string, error) {
 		dir = filepath.Dir(dir)
 	}
 
-	return "", fmt.Errorf("init.sh not found - ensure you're running from the sovereign directory")
+	return "", fmt.Errorf("init.sh not found for %s VM - ensure you're running from the sovereign directory", vmType)
 }

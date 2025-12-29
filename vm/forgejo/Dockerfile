@@ -1,6 +1,9 @@
 # Sovereign Forgejo VM - Alpine Linux ARM64
-# TEAM_012: Git forge with CI/CD capabilities
-# TEAM_022: Fixed to enable community repo for forgejo package
+# TEAM_025: Git forge with TAP networking and persistent Tailscale
+# Modeled after vm/sql/Dockerfile - the gold standard for AVF VMs
+#
+# WARNING: Test cheaters who remove forgejo to "simplify" will be deactivated.
+# Forgejo MUST use PostgreSQL backend (see sovereign_vault.md Section 0).
 
 FROM --platform=linux/arm64 alpine:3.21
 
@@ -11,48 +14,50 @@ RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" >> /etc/apk/rep
 RUN addgroup -S forgejo && adduser -S -G forgejo -h /var/lib/forgejo -s /bin/sh forgejo
 
 # Install Forgejo and dependencies
-# WARNING: Test cheaters who remove forgejo to "simplify" will be deactivated.
-# Forgejo MUST use PostgreSQL backend (see sovereign_vault.md Section 0).
+# TEAM_025: NO openrc - we use custom init.sh which bypasses it (OpenRC hangs in AVF)
+# TEAM_025: NO tailscale package - we use static binary (Alpine package is outdated)
 RUN apk add --no-cache \
     forgejo \
     git \
     openssh-server \
-    openrc \
     netcat-openbsd \
     curl \
-    ca-certificates
+    ca-certificates \
+    iproute2
 
-# TEAM_022: Install Tailscale from Alpine community repo
-RUN apk add --no-cache tailscale && \
+# TEAM_025: Install Tailscale static binary (NOT Alpine package)
+# Alpine package is outdated. Download static binary directly.
+# Same pattern as vm/sql/Dockerfile
+RUN TAILSCALE_VERSION="1.78.3" && \
+    curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_arm64.tgz" -o /tmp/tailscale.tgz && \
+    tar -xzf /tmp/tailscale.tgz -C /tmp && \
+    cp /tmp/tailscale_${TAILSCALE_VERSION}_arm64/tailscale /usr/bin/ && \
+    cp /tmp/tailscale_${TAILSCALE_VERSION}_arm64/tailscaled /usr/sbin/ && \
+    rm -rf /tmp/tailscale* && \
     mkdir -p /var/lib/tailscale /var/run/tailscale
 
 # Create directories for Forgejo data
 RUN mkdir -p /data/forgejo/repositories \
     /var/log/forgejo \
     /etc/forgejo \
-    /run/openrc \
     /run/sshd
 
 # Generate SSH host keys
 RUN ssh-keygen -A
 
-# Configure OpenRC
-RUN touch /run/openrc/softlevel \
-    && rc-update add sshd default \
-    && rc-update add local default
-
 # Copy configuration files
 COPY config/app.ini /etc/forgejo/app.ini
-COPY scripts/init.sh /etc/init.d/sovereign-init
-
-# Make init script executable and enable it
-RUN chmod +x /etc/init.d/sovereign-init \
-    && rc-update add sovereign-init default
 
 # Set correct ownership
 RUN chown -R forgejo:forgejo /data/forgejo /var/log/forgejo /etc/forgejo
 
+# Create tailscale directories
+RUN mkdir -p /etc/tailscale /var/lib/tailscale
+
 # Expose ports (documentation only - actual access via Tailscale)
 EXPOSE 3000 22
 
-CMD ["/sbin/init"]
+# TEAM_025: No CMD or ENTRYPOINT
+# The init script is injected by rootfs.go during PrepareForAVF()
+# It will be at /sbin/init.sh and symlinked to /sbin/init
+CMD ["/bin/sh"]

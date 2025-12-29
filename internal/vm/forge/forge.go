@@ -1,13 +1,12 @@
 // Package forge provides Forgejo VM operations
 // TEAM_012: Git forge VM with CI/CD capabilities
+// TEAM_025: Refactored to use TAP networking and correct paths
 package forge
 
 import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strings"
-	"time"
 
 	"github.com/anthropics/sovereign/internal/device"
 	"github.com/anthropics/sovereign/internal/docker"
@@ -93,159 +92,50 @@ func (v *VM) Build() error {
 }
 
 // Deploy deploys the Forgejo VM to the Android device
+// TEAM_025: Fixed device path to /data/sovereign/vm/forgejo/, removed gvproxy
 func (v *VM) Deploy() error {
 	fmt.Println("=== Deploying Forgejo VM ===")
 
-	// Create device directories
-	fmt.Println("Creating directories on device...")
-	exec.Command("adb", "shell", "su", "-c", "mkdir -p /data/sovereign/forgejo/bin").Run()
+	// TEAM_025: Use persistent Tailscale identity (no cleanup needed)
+	fmt.Println("Tailscale: Using persistent machine identity (no cleanup needed)")
 
-	// Verify directory was created
-	out, err := exec.Command("adb", "shell", "su", "-c", "[ -d /data/sovereign/forgejo ] && echo ok").Output()
-	if err != nil || strings.TrimSpace(string(out)) != "ok" {
-		return fmt.Errorf("failed to create directories on device")
+	// Create device directories
+	// TEAM_025: CRITICAL - path is /data/sovereign/vm/forgejo/, NOT /data/sovereign/forgejo/
+	fmt.Println("Creating directories on device...")
+	if err := device.MkdirP("/data/sovereign/vm/forgejo"); err != nil {
+		return fmt.Errorf("failed to create directories on device: %w", err)
 	}
 
 	// Push files
 	fmt.Println("Pushing rootfs.img...")
-	if err := device.PushFile("vm/forgejo/rootfs.img", "/data/sovereign/forgejo/rootfs.img"); err != nil {
+	if err := device.PushFile("vm/forgejo/rootfs.img", "/data/sovereign/vm/forgejo/rootfs.img"); err != nil {
 		return err
 	}
 
 	fmt.Println("Pushing data.img...")
-	if err := device.PushFile("vm/forgejo/data.img", "/data/sovereign/forgejo/data.img"); err != nil {
+	if err := device.PushFile("vm/forgejo/data.img", "/data/sovereign/vm/forgejo/data.img"); err != nil {
 		return err
 	}
 
 	fmt.Println("Pushing start.sh...")
-	if err := device.PushFile("vm/forgejo/start.sh", "/data/sovereign/forgejo/start.sh"); err != nil {
+	if err := device.PushFile("vm/forgejo/start.sh", "/data/sovereign/vm/forgejo/start.sh"); err != nil {
 		return err
 	}
 
 	// Use shared kernel from sql VM
 	fmt.Println("Pushing kernel (shared from sql VM)...")
-	if err := device.PushFile("vm/sql/Image", "/data/sovereign/forgejo/Image"); err != nil {
+	if err := device.PushFile("vm/sql/Image", "/data/sovereign/vm/forgejo/Image"); err != nil {
 		return err
 	}
 
-	// Use shared gvproxy/gvforwarder from sql VM
-	if _, err := os.Stat("vm/sql/bin/gvproxy"); err == nil {
-		fmt.Println("Pushing gvproxy...")
-		device.PushFile("vm/sql/bin/gvproxy", "/data/sovereign/forgejo/bin/gvproxy")
-		fmt.Println("Pushing gvforwarder...")
-		device.PushFile("vm/sql/bin/gvforwarder", "/data/sovereign/forgejo/bin/gvforwarder")
-	}
+	// TEAM_025: gvproxy removed - we use TAP networking now
 
 	// Make executables
-	exec.Command("adb", "shell", "su", "-c", "chmod +x /data/sovereign/forgejo/start.sh").Run()
-	exec.Command("adb", "shell", "su", "-c", "chmod +x /data/sovereign/forgejo/bin/*").Run()
+	exec.Command("adb", "shell", "su", "-c", "chmod +x /data/sovereign/vm/forgejo/start.sh").Run()
 
 	fmt.Println("\n✓ Forgejo VM deployed")
 	fmt.Println("\nNext: sovereign start --forge")
 	return nil
 }
 
-// Start starts the Forgejo VM
-func (v *VM) Start() error {
-	fmt.Println("=== Starting Forgejo VM ===")
-
-	// Note: Forgejo requires sql-vm to be running
-	fmt.Println("Note: Forgejo requires sql-vm to be running for database")
-
-	// Check if start script exists
-	out, err := exec.Command("adb", "shell", "su", "-c", "[ -x /data/sovereign/forgejo/start.sh ] && echo ok").Output()
-	if err != nil || strings.TrimSpace(string(out)) != "ok" {
-		return fmt.Errorf("start script not found - run 'sovereign deploy --forge' first")
-	}
-
-	// Start the VM
-	fmt.Println("Starting VM...")
-	cmd := exec.Command("adb", "shell", "su", "-c", "/data/sovereign/forgejo/start.sh")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("start script failed: %w", err)
-	}
-
-	// Wait and verify
-	// TEAM_022: Use [c]rosvm pattern to avoid grep matching itself
-	time.Sleep(2 * time.Second)
-	out, _ = exec.Command("adb", "shell", "su", "-c", "ps -ef | grep '[c]rosvm.*forgejo' | awk '{print $2}' | head -1").Output()
-	if strings.TrimSpace(string(out)) == "" {
-		fmt.Println("\n⚠ VM process not found - check logs")
-		return fmt.Errorf("VM failed to start")
-	}
-
-	fmt.Println("\n✓ Forgejo VM started")
-	fmt.Println("  Check Tailscale for forge-vm to appear")
-	fmt.Println("  Web UI: http://forge-vm:3000")
-	return nil
-}
-
-// Stop stops the Forgejo VM
-func (v *VM) Stop() error {
-	fmt.Println("=== Stopping Forgejo VM ===")
-
-	// Kill crosvm process for forge VM
-	exec.Command("adb", "shell", "su", "-c", "pkill -f 'crosvm.*forgejo'").Run()
-	exec.Command("adb", "shell", "su", "-c", "pkill -f 'gvproxy.*forgejo'").Run()
-
-	fmt.Println("✓ Forgejo VM stopped")
-	return nil
-}
-
-// Test tests the Forgejo VM connectivity
-func (v *VM) Test() error {
-	fmt.Println("=== Testing Forgejo VM ===")
-
-	// Test 1: Check Tailscale
-	fmt.Println("\n[Test 1/3] Checking Tailscale connectivity...")
-	cmd := exec.Command("tailscale", "ping", "-c", "1", "forge-vm")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("forge-vm not reachable via Tailscale")
-	}
-	fmt.Println("  ✓ forge-vm reachable via Tailscale")
-
-	// Test 2: Check web UI
-	fmt.Println("\n[Test 2/3] Checking Forgejo web UI...")
-	cmd = exec.Command("curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://forge-vm:3000")
-	output, err := cmd.Output()
-	if err != nil || string(output) != "200" {
-		fmt.Printf("  ⚠ Web UI returned: %s (may need initial setup)\n", string(output))
-	} else {
-		fmt.Println("  ✓ Forgejo web UI responding")
-	}
-
-	// Test 3: Check SSH
-	fmt.Println("\n[Test 3/3] Checking SSH port...")
-	cmd = exec.Command("nc", "-z", "-w", "3", "forge-vm", "22")
-	if err := cmd.Run(); err != nil {
-		fmt.Println("  ⚠ SSH port not responding")
-	} else {
-		fmt.Println("  ✓ SSH port open")
-	}
-
-	fmt.Println("\n✓ Forgejo VM tests complete")
-	return nil
-}
-
-// Remove removes the Forgejo VM from the device
-func (v *VM) Remove() error {
-	fmt.Println("=== Removing Forgejo VM from device ===")
-
-	// First stop the VM if running
-	v.Stop()
-
-	// Remove all files from device
-	fmt.Println("Removing VM files from device...")
-	device.RemoveDir("/data/sovereign/forgejo")
-
-	// Verify removal
-	if device.DirExists("/data/sovereign/forgejo") {
-		return fmt.Errorf("failed to remove /data/sovereign/forgejo")
-	}
-
-	fmt.Println("✓ Forgejo VM removed from device")
-	fmt.Println("\nTo redeploy: sovereign deploy --forge")
-	return nil
-}
+// TEAM_025: Start, Stop, Test, Remove moved to lifecycle.go and verify.go
