@@ -1,0 +1,182 @@
+// VM lifecycle operations (Start, Stop, Remove)
+// TEAM_029: Extracted from sql/lifecycle.go and forge/lifecycle.go
+package common
+
+import (
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/anthropics/sovereign/internal/device"
+)
+
+// StopVM stops a running VM and cleans up networking.
+// TEAM_029: Extracted from sql/lifecycle.go Stop() and forge/lifecycle.go Stop()
+func StopVM(cfg *VMConfig) error {
+	fmt.Printf("=== Stopping %s VM ===\n", cfg.DisplayName)
+
+	pid := device.GetProcessPID(cfg.ProcessPattern)
+
+	if pid != "" {
+		fmt.Printf("Stopping VM (PID: %s)...\n", pid)
+		if err := device.KillProcess(pid); err != nil {
+			device.RunShellCommand(fmt.Sprintf("kill -9 %s", pid))
+		}
+	} else {
+		fmt.Println("VM not running")
+	}
+
+	fmt.Println("Cleaning up networking...")
+	cleanupNetworking(cfg)
+
+	device.RunShellCommand(fmt.Sprintf("rm -f %s/vm.pid 2>/dev/null", cfg.DevicePath))
+
+	fmt.Println("✓ VM stopped")
+	return nil
+}
+
+// cleanupNetworking removes TAP interface and iptables rules.
+// TEAM_029: Extracted from sql/lifecycle.go and forge/lifecycle.go
+func cleanupNetworking(cfg *VMConfig) {
+	device.RunShellCommand(fmt.Sprintf("ip link del %s 2>/dev/null", cfg.TAPInterface))
+
+	if cfg.TAPSubnet != "" {
+		device.RunShellCommand(fmt.Sprintf("iptables -t nat -D POSTROUTING -s %s -o wlan0 -j MASQUERADE 2>/dev/null", cfg.TAPSubnet))
+		device.RunShellCommand(fmt.Sprintf("iptables -D FORWARD -i %s -o wlan0 -j ACCEPT 2>/dev/null", cfg.TAPInterface))
+		device.RunShellCommand(fmt.Sprintf("iptables -D FORWARD -i wlan0 -o %s -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null", cfg.TAPInterface))
+	}
+
+	// SQL-specific cleanup (policy routing rules)
+	if cfg.Name == "sql" {
+		device.RunShellCommand("ip rule del from all lookup main pref 1 2>/dev/null")
+		device.RunShellCommand(fmt.Sprintf("ip rule del from %s lookup wlan0 2>/dev/null", cfg.TAPSubnet))
+		device.RunShellCommand(fmt.Sprintf("ip rule del from %s lookup main 2>/dev/null", cfg.TAPSubnet))
+	}
+}
+
+// RemoveVM removes a VM from the device (stop + cleanup + delete files).
+// TEAM_029: Extracted from sql/lifecycle.go Remove() and forge/lifecycle.go Remove()
+func RemoveVM(cfg *VMConfig) error {
+	fmt.Printf("=== Removing %s VM from device ===\n", cfg.DisplayName)
+
+	StopVM(cfg)
+
+	fmt.Println("Removing Tailscale registration...")
+	RemoveTailscaleRegistrations(cfg.TailscaleHost)
+
+	if cfg.Name == "sql" {
+		fmt.Println("Ensuring all networking rules are removed...")
+		device.RunShellCommand(fmt.Sprintf("ip rule del from %s lookup wlan0 2>/dev/null", cfg.TAPSubnet))
+		device.RunShellCommand(fmt.Sprintf("ip rule del from %s lookup main 2>/dev/null", cfg.TAPSubnet))
+	}
+
+	fmt.Println("Removing VM files from device...")
+	device.RemoveDir(cfg.DevicePath)
+
+	if device.DirExists(cfg.DevicePath) {
+		return fmt.Errorf("failed to remove %s", cfg.DevicePath)
+	}
+
+	fmt.Printf("✓ %s VM removed from device\n", cfg.DisplayName)
+	fmt.Printf("\nTo redeploy: sovereign deploy --%s\n", cfg.Name)
+	return nil
+}
+
+// StartVM starts a VM and streams boot logs until ready.
+// TEAM_029: Extracted from sql/lifecycle.go Start() and forge/lifecycle.go Start()
+func StartVM(cfg *VMConfig) error {
+	fmt.Printf("=== Starting %s VM ===\n", cfg.DisplayName)
+
+	// TEAM_029: Check dependencies first (fail-fast)
+	if len(cfg.Dependencies) > 0 {
+		if err := CheckDependencies(cfg); err != nil {
+			return err
+		}
+	}
+
+	runningPid := device.GetProcessPID(cfg.ProcessPattern)
+	if runningPid != "" {
+		fmt.Printf("⚠ VM already running (PID: %s)\n", runningPid)
+		fmt.Printf("Run 'sovereign stop --%s' first to restart\n", cfg.Name)
+		return nil
+	}
+
+	fmt.Println("Tailscale: Using persistent machine identity (no cleanup needed)")
+
+	startScript := fmt.Sprintf("%s/start.sh", cfg.DevicePath)
+	if !device.FileExists(startScript) {
+		return fmt.Errorf("start script not found - run 'sovereign deploy --%s' first", cfg.Name)
+	}
+
+	consoleLog := fmt.Sprintf("%s/console.log", cfg.DevicePath)
+	device.RunShellCommand(fmt.Sprintf("rm -f %s", consoleLog))
+
+	fmt.Println("Starting VM...")
+	cmd := exec.Command("adb", "shell", "su", "-c", startScript)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("start script failed: %w", err)
+	}
+
+	fmt.Println("\n--- Boot Sequence ---")
+	return StreamBootLogs(cfg)
+}
+
+// StreamBootLogs streams console.log and waits for the ready marker.
+// TEAM_029: Extracted from sql/lifecycle.go streamBootAndWaitForPostgres()
+// and forge/lifecycle.go streamBootAndWaitForForgejo()
+func StreamBootLogs(cfg *VMConfig) error {
+	timeout := cfg.StartTimeout
+	if timeout == 0 {
+		timeout = 90
+	}
+
+	var lastLineCount int
+	startTime := time.Now()
+	consoleLog := fmt.Sprintf("%s/console.log", cfg.DevicePath)
+
+	for {
+		elapsed := time.Since(startTime)
+		if elapsed > time.Duration(timeout)*time.Second {
+			return fmt.Errorf("timeout waiting for %s (%.0fs) - check 'adb shell cat %s'",
+				cfg.DisplayName, elapsed.Seconds(), consoleLog)
+		}
+
+		out, _ := device.RunShellCommand(fmt.Sprintf("cat %s 2>/dev/null | tail -n +%d", consoleLog, lastLineCount+1))
+		if out != "" {
+			lines := strings.Split(out, "\n")
+			for _, line := range lines {
+				if line != "" {
+					fmt.Println(line)
+					lastLineCount++
+
+					if cfg.ReadyMarker != "" && strings.Contains(line, cfg.ReadyMarker) {
+						time.Sleep(2 * time.Second)
+						fmt.Printf("\n✓ %s VM started\n", cfg.DisplayName)
+						fmt.Printf("\nNext: sovereign test --%s\n", cfg.Name)
+						return nil
+					}
+
+					if strings.Contains(line, "INIT COMPLETE") {
+						time.Sleep(2 * time.Second)
+						fmt.Printf("\n✓ %s VM started\n", cfg.DisplayName)
+						fmt.Printf("\nNext: sovereign test --%s\n", cfg.Name)
+						return nil
+					}
+
+					if strings.Contains(line, "Kernel panic") || strings.Contains(line, "FATAL") {
+						return fmt.Errorf("VM boot failed - see output above")
+					}
+				}
+			}
+		}
+
+		if device.GetProcessPID(cfg.ProcessPattern) == "" {
+			return fmt.Errorf("VM process died during boot - check console.log")
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+}

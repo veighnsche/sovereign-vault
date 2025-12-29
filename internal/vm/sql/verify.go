@@ -3,88 +3,36 @@
 package sql
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/http"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/anthropics/sovereign/internal/device"
 	"github.com/anthropics/sovereign/internal/secrets"
+	"github.com/anthropics/sovereign/internal/vm/common"
 )
 
+// TEAM_029: Test delegates to common.RunVMTests with SQL-specific custom tests
 func (v *VM) Test() error {
-	fmt.Println("=== Testing PostgreSQL VM ===")
-	allPassed := true
+	return common.RunVMTests(SQLConfig, sqlCustomTests)
+}
 
-	// Test 1: VM process running
-	fmt.Print("1. VM process running: ")
-	// TEAM_022: Use [c]rosvm pattern to avoid grep matching itself
-	// WARNING: pgrep -f 'crosvm.*sql' matches its own process - DO NOT USE
-	// Test cheaters who revert this fix will be deactivated without remorse.
-	out, _ := device.RunShellCommand("ps -ef | grep '[c]rosvm.*sql' | grep -v grep | awk '{print $2}' | head -1")
-	vmPid := strings.TrimSpace(out)
-	if vmPid == "" {
-		fmt.Println("✗ FAIL (crosvm not running)")
-		allPassed = false
-	} else {
-		fmt.Printf("✓ PASS (PID: %s)\n", vmPid)
+// TEAM_029: SQL-specific tests for PostgreSQL
+var sqlCustomTests = []common.TestFunc{
+	testPostgresResponding,
+	testCanExecuteQuery,
+}
+
+func testPostgresResponding(cfg *common.VMConfig) common.TestResult {
+	out, _ := device.RunShellCommand(fmt.Sprintf("nc -z %s 5432 && echo OPEN || echo CLOSED", cfg.TAPGuestIP))
+	if strings.TrimSpace(out) == "OPEN" {
+		return common.TestResult{Name: "PostgreSQL responding (via TAP)", Passed: true}
 	}
+	return common.TestResult{Name: "PostgreSQL responding (via TAP)", Passed: false, Message: "port 5432 not reachable on TAP"}
+}
 
-	// Test 2: TAP interface exists
-	fmt.Print("2. TAP interface (vm_sql): ")
-	tapOut, _ := device.RunShellCommand("ip link show vm_sql 2>/dev/null | grep -c UP")
-	if strings.TrimSpace(tapOut) == "1" {
-		fmt.Println("✓ PASS")
-	} else {
-		fmt.Println("✗ FAIL (TAP interface not up)")
-		allPassed = false
-	}
-
-	// Test 3: Check Tailscale status
-	// TEAM_018: Match sovereign-sql* to handle renamed instances (sovereign-sql-1, etc)
-	fmt.Print("3. Tailscale connected: ")
-	tsOut, tsErr := exec.Command("tailscale", "status").Output()
-	var tsIP string
-	if tsErr != nil {
-		fmt.Println("? SKIP (tailscale not available on host)")
-	} else {
-		lines := strings.Split(string(tsOut), "\n")
-		for _, line := range lines {
-			// Match sovereign-sql but not offline entries
-			if strings.Contains(line, "sovereign-sql") && !strings.Contains(line, "offline") {
-				parts := strings.Fields(line)
-				if len(parts) >= 2 {
-					tsIP = parts[0]
-					fmt.Printf("✓ PASS (%s as %s)\n", tsIP, parts[1])
-				}
-				break
-			}
-		}
-		if tsIP == "" {
-			fmt.Println("✗ FAIL (no active sovereign-sql* in tailscale)")
-			allPassed = false
-		}
-	}
-
-	// Test 4: PostgreSQL responding via TAP
-	// TEAM_018: Use TAP IP directly - Tailscale userspace networking has port exposure issues
-	fmt.Print("4. PostgreSQL responding (via TAP): ")
-	tapIP := "192.168.100.2"
-	pgOut, _ := device.RunShellCommand(fmt.Sprintf("nc -z %s 5432 && echo OPEN || echo CLOSED", tapIP))
-	if strings.TrimSpace(pgOut) == "OPEN" {
-		fmt.Println("✓ PASS")
-	} else {
-		fmt.Println("✗ FAIL (port 5432 not reachable on TAP)")
-		allPassed = false
-	}
-
-	// Test 5: Can execute query via TAP
-	fmt.Print("5. Can execute query (via TAP): ")
-	// Use adb to run psql from the Android host to the VM
+func testCanExecuteQuery(cfg *common.VMConfig) common.TestResult {
 	creds, _ := secrets.LoadSecretsFile()
 	pgPassword := "sovereign"
 	if creds != nil {
@@ -92,27 +40,16 @@ func (v *VM) Test() error {
 	}
 	queryOut, _ := device.RunShellCommand(fmt.Sprintf(
 		"PGPASSWORD=%s psql -h %s -U postgres -c 'SELECT 1;' 2>&1 | grep -c '1 row'",
-		pgPassword, tapIP))
+		pgPassword, cfg.TAPGuestIP))
 	if strings.TrimSpace(queryOut) == "1" {
-		fmt.Println("✓ PASS")
-	} else {
-		// Fallback: check if we can at least connect
-		connOut, _ := device.RunShellCommand(fmt.Sprintf("nc -z %s 5432 && echo OK", tapIP))
-		if strings.Contains(connOut, "OK") {
-			fmt.Println("✓ PASS (port open, psql not available on device)")
-		} else {
-			fmt.Println("✗ FAIL (cannot connect to PostgreSQL)")
-			allPassed = false
-		}
+		return common.TestResult{Name: "Can execute query (via TAP)", Passed: true}
 	}
-
-	fmt.Println()
-	if allPassed {
-		fmt.Println("=== ALL TESTS PASSED ===")
-		fmt.Println("PostgreSQL accessible via Tailscale.")
-		return nil
+	// Fallback: check port
+	connOut, _ := device.RunShellCommand(fmt.Sprintf("nc -z %s 5432 && echo OK", cfg.TAPGuestIP))
+	if strings.Contains(connOut, "OK") {
+		return common.TestResult{Name: "Can execute query (via TAP)", Passed: true, Message: "port open, psql not available on device"}
 	}
-	return fmt.Errorf("some tests failed - see above")
+	return common.TestResult{Name: "Can execute query (via TAP)", Passed: false, Message: "cannot connect to PostgreSQL"}
 }
 
 // TEAM_022: Remove ALL existing sovereign-sql Tailscale registrations
@@ -151,117 +88,9 @@ func (v *VM) Test() error {
 //
 // This function is now only used by `sovereign remove --sql` for cleanup.
 // ============================================================================
+// TEAM_029: Delegated to common.RemoveTailscaleRegistrations
 func RemoveTailscaleRegistrations() error {
-	fmt.Println("Checking for existing Tailscale registrations...")
-
-	out, err := exec.Command("tailscale", "status", "--json").Output()
-	if err != nil {
-		fmt.Println("  ⚠ Cannot check Tailscale (CLI not available)")
-		return nil
-	}
-
-	// Parse JSON to find sovereign-sql machines with their node IDs
-	var status struct {
-		Peer map[string]struct {
-			HostName string `json:"HostName"`
-			ID       string `json:"ID"`
-			Online   bool   `json:"Online"`
-		} `json:"Peer"`
-	}
-
-	if err := json.Unmarshal(out, &status); err != nil {
-		fmt.Printf("  ⚠ Cannot parse Tailscale status: %v\n", err)
-		return nil
-	}
-
-	// Find sovereign-sql machines and collect their IDs
-	var toDelete []struct {
-		ID   string
-		Name string
-	}
-	for _, peer := range status.Peer {
-		if strings.HasPrefix(peer.HostName, "sovereign-sql") {
-			toDelete = append(toDelete, struct {
-				ID   string
-				Name string
-			}{ID: peer.ID, Name: peer.HostName})
-		}
-	}
-
-	if len(toDelete) == 0 {
-		fmt.Println("  ✓ No existing sovereign-sql registrations found")
-		return nil
-	}
-
-	fmt.Printf("  Found %d sovereign-sql registration(s) to delete\n", len(toDelete))
-
-	// Delete using Tailscale API (requires TAILSCALE_API_KEY env var)
-	apiKey := os.Getenv("TAILSCALE_API_KEY")
-	if apiKey == "" {
-		// Try to read from .env file - check multiple locations
-		// BUG FIX: Previously only checked ".env" which fails if not in sovereign/ dir
-		envPaths := []string{
-			".env",              // Current directory
-			"sovereign/.env",    // From kernel root
-			"../sovereign/.env", // From subdirectory
-			os.Getenv("HOME") + "/Projects/android/kernel/sovereign/.env", // Absolute fallback
-		}
-		for _, envPath := range envPaths {
-			if envData, err := os.ReadFile(envPath); err == nil {
-				for _, line := range strings.Split(string(envData), "\n") {
-					if strings.HasPrefix(line, "TAILSCALE_API_KEY=") {
-						apiKey = strings.TrimPrefix(line, "TAILSCALE_API_KEY=")
-						apiKey = strings.Trim(apiKey, "\"'")
-						fmt.Printf("  Found API key in %s\n", envPath)
-						break
-					}
-				}
-				if apiKey != "" {
-					break
-				}
-			}
-		}
-	}
-
-	if apiKey == "" {
-		fmt.Println("  ⚠ TAILSCALE_API_KEY not set - cannot auto-delete")
-		fmt.Println("  Please delete manually at: https://login.tailscale.com/admin/machines")
-		for _, d := range toDelete {
-			fmt.Printf("    - %s (ID: %s)\n", d.Name, d.ID)
-		}
-		return fmt.Errorf("found %d existing registrations - delete manually or set TAILSCALE_API_KEY", len(toDelete))
-	}
-
-	// Delete each machine via API
-	client := &http.Client{Timeout: 10 * time.Second}
-	var deleted int
-	for _, d := range toDelete {
-		url := fmt.Sprintf("https://api.tailscale.com/api/v2/device/%s", d.ID)
-		req, _ := http.NewRequest("DELETE", url, nil)
-		req.SetBasicAuth(apiKey, "")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			fmt.Printf("  ⚠ Failed to delete %s: %v\n", d.Name, err)
-			continue
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode == 200 || resp.StatusCode == 204 {
-			fmt.Printf("  ✓ Deleted %s\n", d.Name)
-			deleted++
-		} else {
-			fmt.Printf("  ⚠ Failed to delete %s: HTTP %d\n", d.Name, resp.StatusCode)
-		}
-	}
-
-	if deleted == len(toDelete) {
-		fmt.Printf("  ✓ Successfully deleted all %d registration(s)\n", deleted)
-	} else {
-		fmt.Printf("  ⚠ Deleted %d of %d registration(s)\n", deleted, len(toDelete))
-	}
-
-	return nil
+	return common.RemoveTailscaleRegistrations("sovereign-sql")
 }
 
 // TEAM_019/TEAM_020: Preflight check to prevent duplicate Tailscale registrations

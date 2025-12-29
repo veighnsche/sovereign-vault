@@ -24,16 +24,37 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/anthropics/sovereign/internal/device"
 	"github.com/anthropics/sovereign/internal/docker"
 	"github.com/anthropics/sovereign/internal/rootfs"
 	"github.com/anthropics/sovereign/internal/secrets"
 	"github.com/anthropics/sovereign/internal/vm"
+	"github.com/anthropics/sovereign/internal/vm/common"
 )
 
 // ForceDeploySkipTailscaleCheck skips Tailscale idempotency check when true
 // TEAM_019: Package-level flag for --force CLI option
 var ForceDeploySkipTailscaleCheck bool
+
+// TEAM_029: SQLConfig defines the configuration for the PostgreSQL VM
+var SQLConfig = &common.VMConfig{
+	Name:           "sql",
+	DisplayName:    "PostgreSQL",
+	TAPInterface:   "vm_sql",
+	TAPHostIP:      "192.168.100.1",
+	TAPGuestIP:     "192.168.100.2",
+	TAPSubnet:      "192.168.100.0/24",
+	TailscaleHost:  "sovereign-sql",
+	DevicePath:     "/data/sovereign/vm/sql",
+	LocalPath:      "vm/sql",
+	ServicePorts:   []int{5432},
+	ReadyMarker:    "PostgreSQL started",
+	StartTimeout:   90,
+	DockerImage:    "sovereign-sql",
+	SharedKernel:   false,
+	KernelSource:   "",
+	NeedsSecrets:   true,
+	ProcessPattern: "[c]rosvm.*sql",
+}
 
 func init() {
 	vm.Register("sql", &VM{})
@@ -143,91 +164,7 @@ func (v *VM) Build() error {
 	return nil
 }
 
+// TEAM_029: Deploy delegates to common.DeployVM
 func (v *VM) Deploy() error {
-	fmt.Println("=== Deploying PostgreSQL VM ===")
-
-	// ============================================================================
-	// TEAM_023: DON'T delete Tailscale registrations on deploy!
-	// ============================================================================
-	// The VM now stores Tailscale state on data.img (persistent disk).
-	// Machine identity survives rebuilds - no need to delete and re-register.
-	// RemoveTailscaleRegistrations() is only used in `sovereign remove --sql`.
-	// ============================================================================
-	fmt.Println("Tailscale: Using persistent machine identity (no cleanup needed)")
-
-	// Verify images and kernel exist
-	requiredFiles := []string{"vm/sql/rootfs.img", "vm/sql/data.img", "vm/sql/Image"}
-	for _, f := range requiredFiles {
-		if _, err := os.Stat(f); os.IsNotExist(err) {
-			return fmt.Errorf("%s not found - run 'sovereign build --sql' first", f)
-		}
-	}
-
-	// TEAM_006: Fail early if .env is missing
-	envPath := ".env"
-	if _, err := os.Stat(envPath); os.IsNotExist(err) {
-		return fmt.Errorf(".env file not found - Tailscale won't connect without it\n" +
-			"  1. Copy .env.example to .env\n" +
-			"  2. Get auth key from https://login.tailscale.com/admin/settings/keys\n" +
-			"  3. Fill in TAILSCALE_AUTHKEY in .env")
-	}
-
-	// Create device directories (ignore error if already exists)
-	fmt.Println("Creating directories on device...")
-	device.MkdirP("/data/sovereign/vm/sql")
-	// Verify directory was created
-	if !device.DirExists("/data/sovereign/vm/sql") {
-		return fmt.Errorf("failed to create directories on device")
-	}
-
-	// Push images
-	fmt.Println("Pushing rootfs.img (this may take a while)...")
-	if err := device.PushFile("vm/sql/rootfs.img", "/data/sovereign/vm/sql/rootfs.img"); err != nil {
-		return err
-	}
-
-	fmt.Println("Pushing data.img...")
-	if err := device.PushFile("vm/sql/data.img", "/data/sovereign/vm/sql/data.img"); err != nil {
-		return err
-	}
-
-	fmt.Println("Pushing guest kernel (this may take a while - 35MB)...")
-	if err := device.PushFile("vm/sql/Image", "/data/sovereign/vm/sql/Image"); err != nil {
-		return err
-	}
-
-	// Push .env if exists
-	if _, err := os.Stat(envPath); err == nil {
-		fmt.Println("Pushing .env...")
-		if err := device.PushFile(envPath, "/data/sovereign/.env"); err != nil {
-			return err
-		}
-	}
-
-	// Create start script on device
-	fmt.Println("Creating start script...")
-	if err := createStartScript(); err != nil {
-		return err
-	}
-
-	fmt.Println("\n✓ PostgreSQL VM deployed")
-	fmt.Println("\nNext: sovereign start --sql")
-	return nil
-}
-
-func createStartScript() error {
-	scriptPath := "vm/sql/start.sh"
-	if _, err := os.Stat(scriptPath); os.IsNotExist(err) {
-		return fmt.Errorf("start script not found: %s", scriptPath)
-	}
-
-	if err := device.PushFile(scriptPath, "/data/sovereign/vm/sql/start.sh"); err != nil {
-		return err
-	}
-
-	if _, err := device.RunShellCommand("chmod +x /data/sovereign/vm/sql/start.sh"); err != nil {
-		return fmt.Errorf("failed to chmod start script: %w", err)
-	}
-
-	return nil
+	return common.DeployVM(SQLConfig)
 }
