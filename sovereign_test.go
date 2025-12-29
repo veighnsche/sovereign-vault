@@ -417,17 +417,23 @@ func (s *TestState) theStartScriptShouldExistAt(ctx context.Context, path string
 }
 
 func (s *TestState) theVMProcessShouldBeRunning(ctx context.Context) error {
-	out, _ := exec.Command("adb", "shell", "su", "-c", "pidof crosvm").Output()
+	// TEAM_023: Check for specific VM, not just any crosvm
+	pattern := fmt.Sprintf("[c]rosvm.*%s", s.vmType)
+	out, _ := exec.Command("adb", "shell", "su", "-c",
+		fmt.Sprintf("ps -ef | grep '%s' | awk '{print $2}' | head -1", pattern)).Output()
 	if strings.TrimSpace(string(out)) == "" {
-		return fmt.Errorf("VM process is not running")
+		return fmt.Errorf("%s VM process is not running", s.vmType)
 	}
 	return nil
 }
 
 func (s *TestState) theVMProcessShouldNotBeRunning(ctx context.Context) error {
-	out, _ := exec.Command("adb", "shell", "su", "-c", "pidof crosvm").Output()
+	// TEAM_023: Check for specific VM, not just any crosvm
+	pattern := fmt.Sprintf("[c]rosvm.*%s", s.vmType)
+	out, _ := exec.Command("adb", "shell", "su", "-c",
+		fmt.Sprintf("ps -ef | grep '%s' | awk '{print $2}' | head -1", pattern)).Output()
 	if strings.TrimSpace(string(out)) != "" {
-		return fmt.Errorf("VM process is still running")
+		return fmt.Errorf("%s VM process is still running (PID: %s)", s.vmType, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
