@@ -371,6 +371,7 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 18. **GVFORWARDER NEEDS DHCLIENT** — Create a wrapper in /usr/bin/dhclient that calls udhcpc
 19. **CLEAN UP SOCKETS** — Delete vm.sock/gvproxy.sock before restarting VM
 20. **SET PATH IN INIT** — Custom init scripts need `export PATH=...` or binaries won't be found
+21. **ADB TIMEOUT** — Use `RunShellCommand()` with a 30-second timeout to prevent hangs
 
 ---
 

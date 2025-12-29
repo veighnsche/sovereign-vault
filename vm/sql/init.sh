@@ -146,8 +146,8 @@ mkdir -p /data/tailscale /var/run/tailscale /dev/net
 [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
 chmod 666 /dev/net/tun
 
+# TEAM_030: Use native tun mode - kernel now has full nftables support
 /usr/sbin/tailscaled \
-    --tun=userspace-networking \
     --state=/data/tailscale/tailscaled.state \
     --socket=/var/run/tailscale/tailscaled.sock &
 TAILSCALED_PID=$!
@@ -163,14 +163,28 @@ done
 # which may not be ready immediately after tailscaled starts.
 STATE_FILE="/data/tailscale/tailscaled.state"
 
+# TEAM_030: Validate state file content, not just existence
+# A corrupt/empty state file will cause Tailscale to generate new nodekey
+STATE_VALID=false
 if [ -f "$STATE_FILE" ] && [ -s "$STATE_FILE" ]; then
-    # We have saved state - reconnect without authkey (preserves machine identity!)
-    echo "Tailscale: Found persistent state, reconnecting..."
-    /usr/bin/tailscale up --hostname=sovereign-sql 2>&1
-    /usr/bin/tailscale serve --bg --tcp 5432 5432 2>&1 || true
+    # Check if state has actual Tailscale identity (not just empty JSON)
+    if grep -q 'PrivateNodeKey' "$STATE_FILE" 2>/dev/null; then
+        STATE_VALID=true
+    else
+        echo "Tailscale: State file exists but appears invalid, will use authkey"
+    fi
+fi
+
+if [ "$STATE_VALID" = "true" ]; then
+    # We have valid saved state - reconnect without authkey (preserves machine identity!)
+    echo "Tailscale: Found valid persistent state, reconnecting..."
+    # TEAM_033: Advertise VM subnet as subnet router - enables external Tailscale access
+    # This is the fix for the tailscale serve limitation documented in TAILSCALE_AVF_LIMITATIONS.md
+    /usr/bin/tailscale up --hostname=sovereign-sql --advertise-routes=192.168.100.0/24 --accept-routes 2>&1
+    # TEAM_030: tailscale serve moved to after PostgreSQL starts (port conflict)
 else
-    # First boot - need authkey for initial registration
-    echo "Tailscale: No saved state, first-time registration..."
+    # First boot or invalid state - need authkey for registration
+    echo "Tailscale: No valid state, using authkey for registration..."
     AUTHKEY=""
     for param in $(cat /proc/cmdline); do
         case "$param" in
@@ -178,8 +192,11 @@ else
         esac
     done
     if [ -n "$AUTHKEY" ]; then
-        /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-sql 2>&1
-        /usr/bin/tailscale serve --bg --tcp 5432 5432 2>&1
+        # Delete invalid state file if exists
+        rm -f "$STATE_FILE" 2>/dev/null
+        # TEAM_033: Advertise VM subnet as subnet router - enables external Tailscale access
+        /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-sql --advertise-routes=192.168.100.0/24 --accept-routes 2>&1
+        # TEAM_030: tailscale serve moved to after PostgreSQL starts (port conflict)
     else
         echo "WARNING: No authkey for first-time registration"
     fi
@@ -223,12 +240,28 @@ fi
 
 su postgres -c "pg_ctl -D /data/postgres -l /var/log/postgresql.log start" 2>&1
 sleep 2
+# TEAM_030: Debug - show PostgreSQL log if startup failed
+if ! su postgres -c "pg_isready" 2>/dev/null; then
+    echo "PostgreSQL failed to start, checking log:"
+    cat /var/log/postgresql.log 2>&1 | tail -30
+fi
 
 # TEAM_023: FIX - $DB_PASSWORD must use double quotes to expand!
 # The original had single quotes which prevented variable expansion
 su postgres -c "psql -c \"ALTER USER postgres PASSWORD '$DB_PASSWORD';\"" 2>&1
+
+# TEAM_029: Create forgejo database user for Forgejo VM
+su postgres -c "psql -c \"CREATE USER forgejo WITH PASSWORD 'forgejo';\"" 2>&1 || true
+su postgres -c "psql -c \"CREATE DATABASE forgejo OWNER forgejo;\"" 2>&1 || true
+su postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE forgejo TO forgejo;\"" 2>&1 || true
+echo "Created forgejo database user"
+
 echo "PostgreSQL version:"
 su postgres -c "psql -c \"SELECT version();\"" 2>&1
+
+# TEAM_030: Set up tailscale serve AFTER PostgreSQL is running (avoids port conflict)
+# Use TAP IP - native tun's fwmark routing interferes with localhost
+/usr/bin/tailscale serve --bg --tcp 5432 tcp://192.168.100.2:5432 2>&1 || true
 
 # CRITICAL: These messages are monitored by the host to detect successful boot
 log "PostgreSQL started"
@@ -250,13 +283,14 @@ while true; do
     # Check Tailscale daemon
     if ! kill -0 $TAILSCALED_PID 2>/dev/null; then
         echo "$(date): Tailscaled died, restarting..."
+        # TEAM_030: Use native tun mode - kernel has full nftables support
         /usr/sbin/tailscaled \
-            --tun=userspace-networking \
             --state=/data/tailscale/tailscaled.state \
             --socket=/var/run/tailscale/tailscaled.sock &
         TAILSCALED_PID=$!
         sleep 3
-        /usr/bin/tailscale serve --bg --tcp 5432 5432 2>&1 || true
+        # TEAM_030: Native tun's fwmark routing interferes with localhost - use TAP IP
+        /usr/bin/tailscale serve --bg --tcp 5432 tcp://192.168.100.2:5432 2>&1 || true
     fi
     
     sleep 30

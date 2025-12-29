@@ -5,30 +5,39 @@
 # WARNING: Test cheaters who remove forgejo to "simplify" will be deactivated.
 # Forgejo MUST use PostgreSQL backend (see sovereign_vault.md Section 0).
 
-FROM --platform=linux/arm64 alpine:3.21
+# TEAM_029: Mirror SQL VM exactly - Alpine 3.23, no platform flag
+FROM alpine:3.23
 
 # Enable community repository for forgejo
-RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.21/community" >> /etc/apk/repositories
+RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.23/community" >> /etc/apk/repositories
 
 # Create forgejo user BEFORE installing forgejo package
 RUN addgroup -S forgejo && adduser -S -G forgejo -h /var/lib/forgejo -s /bin/sh forgejo
 
-# Install Forgejo and dependencies
+# Install dependencies (NOT Alpine's forgejo - it lacks PostgreSQL support)
 # TEAM_025: NO openrc - we use custom init.sh which bypasses it (OpenRC hangs in AVF)
-# TEAM_025: NO tailscale package - we use static binary (Alpine package is outdated)
+# TEAM_029: Alpine's forgejo only has SQLite. Download official binary with PostgreSQL.
 RUN apk add --no-cache \
-    forgejo \
     git \
     openssh-server \
     netcat-openbsd \
     curl \
     ca-certificates \
-    iproute2
+    iproute2 \
+    bash \
+    postgresql-client
+
+# TEAM_029: Extract Forgejo binary from official Docker image
+# The Docker image has PostgreSQL support, the standalone binary doesn't!
+# Copy from multi-arch image to get ARM64 binary with all database drivers
+COPY --from=codeberg.org/forgejo/forgejo:9.0.3 /app/gitea/gitea /usr/bin/forgejo
+RUN chmod +x /usr/bin/forgejo && forgejo --version
 
 # TEAM_025: Install Tailscale static binary (NOT Alpine package)
 # Alpine package is outdated. Download static binary directly.
 # Same pattern as vm/sql/Dockerfile
-RUN TAILSCALE_VERSION="1.78.3" && \
+# TEAM_029: Use same Tailscale version as SQL VM (1.92.3)
+RUN TAILSCALE_VERSION="1.92.3" && \
     curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TAILSCALE_VERSION}_arm64.tgz" -o /tmp/tailscale.tgz && \
     tar -xzf /tmp/tailscale.tgz -C /tmp && \
     cp /tmp/tailscale_${TAILSCALE_VERSION}_arm64/tailscale /usr/bin/ && \

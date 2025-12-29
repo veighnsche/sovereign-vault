@@ -3,6 +3,7 @@
 package device
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -125,8 +126,26 @@ func IsConnected() bool {
 
 // RunShellCommand runs a shell command on the device as root
 // TEAM_011: Centralized device command execution
+// TEAM_029: Added 30s timeout to prevent hangs
 func RunShellCommand(cmd string) (string, error) {
-	out, err := exec.Command("adb", "shell", "su", "-c", cmd).Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "adb", "shell", "su", "-c", cmd).Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("command timed out after 30s: %s", cmd)
+	}
+	return strings.TrimSpace(string(out)), err
+}
+
+// RunShellCommandQuick runs a shell command with a short 5s timeout
+// TEAM_029: For cleanup commands that should complete quickly or be ignored
+func RunShellCommandQuick(cmd string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "adb", "shell", "su", "-c", cmd).Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", nil // Silently ignore timeout for cleanup commands
+	}
 	return strings.TrimSpace(string(out)), err
 }
 

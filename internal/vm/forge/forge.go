@@ -10,13 +10,14 @@ import (
 )
 
 // TEAM_029: ForgeConfig defines the configuration for the Forgejo VM
+// TEAM_033: Fixed subnet to match actual implementation - all VMs on same bridge (192.168.100.0/24)
 var ForgeConfig = &common.VMConfig{
 	Name:           "forge",
 	DisplayName:    "Forgejo",
 	TAPInterface:   "vm_forge",
-	TAPHostIP:      "192.168.101.1",
-	TAPGuestIP:     "192.168.101.2",
-	TAPSubnet:      "192.168.101.0/24",
+	TAPHostIP:      "192.168.100.1",
+	TAPGuestIP:     "192.168.100.3",
+	TAPSubnet:      "192.168.100.0/24",
 	TailscaleHost:  "sovereign-forge",
 	DevicePath:     "/data/sovereign/vm/forgejo",
 	LocalPath:      "vm/forgejo",

@@ -13,15 +13,26 @@ import (
 
 // StopVM stops a running VM and cleans up networking.
 // TEAM_029: Extracted from sql/lifecycle.go Stop() and forge/lifecycle.go Stop()
+// TEAM_029: Added robust error handling and timeouts for all edge cases
 func StopVM(cfg *VMConfig) error {
 	fmt.Printf("=== Stopping %s VM ===\n", cfg.DisplayName)
 
+	// Get PID with timeout protection (already in RunShellCommand)
 	pid := device.GetProcessPID(cfg.ProcessPattern)
 
 	if pid != "" {
 		fmt.Printf("Stopping VM (PID: %s)...\n", pid)
+		// Try graceful kill first
 		if err := device.KillProcess(pid); err != nil {
-			device.RunShellCommand(fmt.Sprintf("kill -9 %s", pid))
+			// Force kill if graceful fails
+			device.RunShellCommand(fmt.Sprintf("kill -9 %s 2>/dev/null", pid))
+		}
+		// Brief wait for process to die
+		time.Sleep(500 * time.Millisecond)
+		// Verify it's dead, force kill if not
+		if device.GetProcessPID(cfg.ProcessPattern) != "" {
+			fmt.Println("Process still alive, force killing...")
+			device.RunShellCommand(fmt.Sprintf("kill -9 %s 2>/dev/null", pid))
 		}
 	} else {
 		fmt.Println("VM not running")
@@ -38,20 +49,23 @@ func StopVM(cfg *VMConfig) error {
 
 // cleanupNetworking removes TAP interface and iptables rules.
 // TEAM_029: Extracted from sql/lifecycle.go and forge/lifecycle.go
+// TEAM_029: Each command has 2>/dev/null and runs independently to avoid blocking
 func cleanupNetworking(cfg *VMConfig) {
-	device.RunShellCommand(fmt.Sprintf("ip link del %s 2>/dev/null", cfg.TAPInterface))
+	// Delete TAP interface - ignore errors (may not exist)
+	device.RunShellCommandQuick(fmt.Sprintf("ip link del %s 2>/dev/null || true", cfg.TAPInterface))
 
 	if cfg.TAPSubnet != "" {
-		device.RunShellCommand(fmt.Sprintf("iptables -t nat -D POSTROUTING -s %s -o wlan0 -j MASQUERADE 2>/dev/null", cfg.TAPSubnet))
-		device.RunShellCommand(fmt.Sprintf("iptables -D FORWARD -i %s -o wlan0 -j ACCEPT 2>/dev/null", cfg.TAPInterface))
-		device.RunShellCommand(fmt.Sprintf("iptables -D FORWARD -i wlan0 -o %s -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null", cfg.TAPInterface))
+		// Remove iptables rules - ignore errors (may not exist)
+		device.RunShellCommandQuick(fmt.Sprintf("iptables -t nat -D POSTROUTING -s %s -o wlan0 -j MASQUERADE 2>/dev/null || true", cfg.TAPSubnet))
+		device.RunShellCommandQuick(fmt.Sprintf("iptables -D FORWARD -i %s -o wlan0 -j ACCEPT 2>/dev/null || true", cfg.TAPInterface))
+		device.RunShellCommandQuick(fmt.Sprintf("iptables -D FORWARD -i wlan0 -o %s -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true", cfg.TAPInterface))
 	}
 
 	// SQL-specific cleanup (policy routing rules)
 	if cfg.Name == "sql" {
-		device.RunShellCommand("ip rule del from all lookup main pref 1 2>/dev/null")
-		device.RunShellCommand(fmt.Sprintf("ip rule del from %s lookup wlan0 2>/dev/null", cfg.TAPSubnet))
-		device.RunShellCommand(fmt.Sprintf("ip rule del from %s lookup main 2>/dev/null", cfg.TAPSubnet))
+		device.RunShellCommandQuick("ip rule del from all lookup main pref 1 2>/dev/null || true")
+		device.RunShellCommandQuick(fmt.Sprintf("ip rule del from %s lookup wlan0 2>/dev/null || true", cfg.TAPSubnet))
+		device.RunShellCommandQuick(fmt.Sprintf("ip rule del from %s lookup main 2>/dev/null || true", cfg.TAPSubnet))
 	}
 }
 

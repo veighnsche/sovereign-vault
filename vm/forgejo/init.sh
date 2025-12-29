@@ -83,8 +83,9 @@ mkdir -p /dev/net
 [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
 chmod 666 /dev/net/tun
 
-# TEAM_025: Configure TAP networking
-# Host TAP is 192.168.101.1, guest is 192.168.101.2
+# TEAM_030: Configure TAP networking (bridge-based)
+# All VMs on same 192.168.100.x subnet via shared bridge
+# SQL VM: 192.168.100.2, Forge VM: 192.168.100.3, Gateway: 192.168.100.1
 echo "=== Configuring TAP Network ==="
 sleep 1
 
@@ -110,12 +111,14 @@ fi
 echo "Found interface: $IFACE"
 
 if [ -n "$IFACE" ]; then
-    ip addr add 192.168.101.2/24 dev "$IFACE"
+    # TEAM_030: Use 192.168.100.3 - same subnet as SQL VM (192.168.100.2)
+    ip addr add 192.168.100.3/24 dev "$IFACE"
     ip link set "$IFACE" up
-    ip route add default via 192.168.101.1
+    ip route add default via 192.168.100.1
     echo "nameserver 8.8.8.8" > /etc/resolv.conf
-    echo "Network configured on $IFACE"
+    echo "Network configured on $IFACE (192.168.100.3)"
     ip addr show "$IFACE"
+    ip route show
 else
     echo "WARNING: No network interface found"
     ip link
@@ -138,8 +141,8 @@ mkdir -p /data/tailscale /var/run/tailscale /dev/net
 [ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
 chmod 666 /dev/net/tun
 
+# TEAM_030: Use native tun mode - kernel now has full nftables support
 /usr/sbin/tailscaled \
-    --tun=userspace-networking \
     --state=/data/tailscale/tailscaled.state \
     --socket=/var/run/tailscale/tailscaled.sock &
 TAILSCALED_PID=$!
@@ -153,13 +156,25 @@ done
 # TEAM_025: Check if we have PERSISTENT state (machine identity survives rebuilds)
 STATE_FILE="/data/tailscale/tailscaled.state"
 
+# TEAM_030: Validate state file content, not just existence
+# A corrupt/empty state file will cause Tailscale to generate new nodekey
+STATE_VALID=false
 if [ -f "$STATE_FILE" ] && [ -s "$STATE_FILE" ]; then
-    # We have saved state - reconnect without authkey (preserves machine identity!)
-    echo "Tailscale: Found persistent state, reconnecting..."
+    # Check if state has actual Tailscale identity (not just empty JSON)
+    if grep -q 'PrivateNodeKey' "$STATE_FILE" 2>/dev/null; then
+        STATE_VALID=true
+    else
+        echo "Tailscale: State file exists but appears invalid, will use authkey"
+    fi
+fi
+
+if [ "$STATE_VALID" = "true" ]; then
+    # We have valid saved state - reconnect without authkey (preserves machine identity!)
+    echo "Tailscale: Found valid persistent state, reconnecting..."
     /usr/bin/tailscale up --hostname=sovereign-forge 2>&1
 else
-    # First boot - need authkey for initial registration
-    echo "Tailscale: No saved state, first-time registration..."
+    # First boot or invalid state - need authkey for registration
+    echo "Tailscale: No valid state, using authkey for registration..."
     AUTHKEY=""
     for param in $(cat /proc/cmdline); do
         case "$param" in
@@ -167,17 +182,20 @@ else
         esac
     done
     if [ -n "$AUTHKEY" ]; then
+        # Delete invalid state file if exists
+        rm -f "$STATE_FILE" 2>/dev/null
         /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-forge 2>&1
     else
         echo "WARNING: No authkey for first-time registration"
     fi
 fi
 
-# TEAM_025: Expose Forgejo ports via Tailscale serve
+# TEAM_030: Expose Forgejo ports via Tailscale serve
+# Native tun's fwmark routing interferes with localhost - use TAP IP instead
 # - Port 3000: Forgejo web UI
 # - Port 22: Git SSH access
-/usr/bin/tailscale serve --bg --tcp 3000 3000 2>&1 || true
-/usr/bin/tailscale serve --bg --tcp 22 22 2>&1 || true
+/usr/bin/tailscale serve --bg --tcp 3000 tcp://192.168.100.3:3000 2>&1 || true
+/usr/bin/tailscale serve --bg --tcp 22 tcp://192.168.100.3:22 2>&1 || true
 
 /usr/bin/tailscale status 2>&1
 
@@ -188,27 +206,63 @@ fi
 # The SQL VM should be running and accessible via Tailscale.
 # ============================================================================
 echo "=== Waiting for PostgreSQL ==="
-DB_HOST="sovereign-sql"
-for i in $(seq 1 60); do
-    if nc -z "$DB_HOST" 5432 2>/dev/null; then
-        log "PostgreSQL is ready"
-        break
-    fi
-    if [ $i -eq 60 ]; then
-        log "WARNING: PostgreSQL timeout after 60s, starting Forgejo anyway"
-    fi
-    sleep 1
-done
+# TEAM_029: Use TAP IP for VM-to-VM (Tailscale userspace can't initiate outgoing)
+# SQL VM TAP IP: 192.168.100.2, routed via Android host gateway
+DB_HOST="192.168.100.2"
+DB_PORT="5432"
+DB_USER="forgejo"
+DB_NAME="forgejo"
+DB_URI="postgres://${DB_USER}:***@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+
+log "PostgreSQL URI: $DB_URI"
+echo "PostgreSQL URI: $DB_URI"
+
+# TEAM_029: FAIL FAST - don't start a broken service
+if ! nc -z "$DB_HOST" "$DB_PORT" 2>/dev/null; then
+    log "PostgreSQL not immediately available, waiting..."
+    for i in $(seq 1 30); do
+        if nc -z "$DB_HOST" "$DB_PORT" 2>/dev/null; then
+            log "PostgreSQL is ready at ${DB_HOST}:${DB_PORT}"
+            break
+        fi
+        if [ $i -eq 30 ]; then
+            log "FATAL: PostgreSQL at ${DB_HOST}:${DB_PORT} not responding after 30s"
+            log "Cannot start Forgejo without database - FAIL FAST"
+            echo "FATAL: PostgreSQL dependency unavailable"
+            # Keep VM running for debugging but don't start Forgejo
+            while true; do sleep 3600; done
+        fi
+        sleep 1
+    done
+else
+    log "PostgreSQL immediately available at ${DB_HOST}:${DB_PORT}"
+fi
+
+# TEAM_029: Test actual PostgreSQL protocol connection (not just TCP)
+log "Testing PostgreSQL protocol connection..."
+echo "Testing PostgreSQL protocol connection..."
+if command -v psql >/dev/null 2>&1; then
+    PGPASSWORD=forgejo psql -h "$DB_HOST" -U forgejo -d forgejo -c "SELECT 1;" 2>&1 | head -5 || log "psql test failed"
+else
+    log "psql not available, testing with nc verbose..."
+    echo "QUIT" | nc -v -w 5 "$DB_HOST" "$DB_PORT" 2>&1 | head -5 || true
+fi
 
 # ============================================================================
 # TEAM_025: Start Forgejo
 # ============================================================================
 echo "=== Starting Forgejo ==="
-mkdir -p /data/forgejo/repositories /var/log/forgejo
-chown -R forgejo:forgejo /data/forgejo /var/log/forgejo
+mkdir -p /data/forgejo/repositories /var/log/forgejo /var/lib/forgejo
+chown -R forgejo:forgejo /data/forgejo /var/log/forgejo /var/lib/forgejo
 
-# Start Forgejo as forgejo user
-su -s /bin/sh forgejo -c '/usr/bin/forgejo web' &
+# TEAM_029: Set Forgejo paths - official binary looks in wrong places by default
+export FORGEJO_WORK_DIR=/var/lib/forgejo
+export GITEA_WORK_DIR=/var/lib/forgejo
+
+# Start Forgejo with explicit config path
+# TEAM_029: Redirect stderr to see crash reasons
+echo "Starting Forgejo with config: /etc/forgejo/app.ini"
+su -s /bin/sh forgejo -c 'FORGEJO_WORK_DIR=/var/lib/forgejo GITEA_WORK_DIR=/var/lib/forgejo /usr/bin/forgejo web -c /etc/forgejo/app.ini 2>&1' &
 FORGEJO_PID=$!
 
 log "Forgejo started (PID: $FORGEJO_PID)"
@@ -224,22 +278,23 @@ while true; do
     # Check Forgejo
     if ! kill -0 $FORGEJO_PID 2>/dev/null; then
         echo "$(date): Forgejo died, restarting..."
-        su -s /bin/sh forgejo -c '/usr/bin/forgejo web' &
+        # TEAM_029: Must include -c flag and env vars on restart too!
+        su -s /bin/sh forgejo -c 'FORGEJO_WORK_DIR=/var/lib/forgejo GITEA_WORK_DIR=/var/lib/forgejo /usr/bin/forgejo web -c /etc/forgejo/app.ini' &
         FORGEJO_PID=$!
         sleep 5
     fi
     
     # Check Tailscale daemon
+    # TEAM_033: Fixed inconsistency - restart must match initial start (native tun, TAP IP)
     if ! kill -0 $TAILSCALED_PID 2>/dev/null; then
         echo "$(date): Tailscaled died, restarting..."
         /usr/sbin/tailscaled \
-            --tun=userspace-networking \
             --state=/data/tailscale/tailscaled.state \
             --socket=/var/run/tailscale/tailscaled.sock &
         TAILSCALED_PID=$!
         sleep 3
-        /usr/bin/tailscale serve --bg --tcp 3000 3000 2>&1 || true
-        /usr/bin/tailscale serve --bg --tcp 22 22 2>&1 || true
+        /usr/bin/tailscale serve --bg --tcp 3000 tcp://192.168.100.3:3000 2>&1 || true
+        /usr/bin/tailscale serve --bg --tcp 22 tcp://192.168.100.3:22 2>&1 || true
     fi
     
     sleep 30

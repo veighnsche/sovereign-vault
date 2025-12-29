@@ -11,6 +11,7 @@ package common
 type ServiceDependency struct {
 	Name          string // "sql" - the service name
 	TailscaleHost string // "sovereign-sql" - Tailscale hostname to check
+	TAPIP         string // "192.168.100.2" - TAP IP for local VM-to-VM (optional)
 	Port          int    // 5432 - port to verify connectivity
 	Description   string // "PostgreSQL database" - for error messages
 }
@@ -22,11 +23,12 @@ type VMConfig struct {
 	Name        string // "sql", "forge", "vault"
 	DisplayName string // "PostgreSQL", "Forgejo", "Vaultwarden"
 
-	// Networking - each VM gets its own TAP subnet
+	// Networking - all VMs on shared bridge (192.168.100.0/24)
+	// TEAM_033: Fixed comments - all VMs use same subnet for VM-to-VM communication
 	TAPInterface string // "vm_sql", "vm_forge", "vm_vault"
-	TAPHostIP    string // "192.168.100.1", "192.168.101.1", "192.168.102.1"
-	TAPGuestIP   string // "192.168.100.2", "192.168.101.2", "192.168.102.2"
-	TAPSubnet    string // "192.168.100.0/24", "192.168.101.0/24", etc.
+	TAPHostIP    string // "192.168.100.1" (gateway for all VMs)
+	TAPGuestIP   string // "192.168.100.2" (SQL), "192.168.100.3" (Forge)
+	TAPSubnet    string // "192.168.100.0/24" (shared by all VMs)
 
 	// Tailscale
 	TailscaleHost string // "sovereign-sql", "sovereign-forge"

@@ -498,16 +498,17 @@ func (s *TestState) theVMShouldBeStopped(ctx context.Context) error {
 }
 
 func (s *TestState) theForgeTAPIPShouldBe(ctx context.Context, expectedIP string) error {
-	// This checks the configuration, not runtime state
-	// Forge VM uses 192.168.101.1 per our fix
-	if expectedIP != "192.168.101.1" {
+	// TEAM_033: Fixed to match actual implementation - all VMs on same 192.168.100.0/24 subnet
+	// Forge VM uses 192.168.100.3 (SQL is .2, gateway is .1)
+	if expectedIP != "192.168.100.3" {
 		return fmt.Errorf("expected Forge TAP IP to be configured as %s", expectedIP)
 	}
 	return nil
 }
 
 func (s *TestState) theForgeTAPIPShouldDifferFromSQLTAPIP(ctx context.Context) error {
-	// SQL uses 192.168.100.1, Forge uses 192.168.101.1
+	// TEAM_033: Fixed incorrect comment - all VMs on same 192.168.100.0/24 subnet
+	// SQL VM: 192.168.100.2, Forge VM: 192.168.100.3, Gateway: 192.168.100.1
 	return nil
 }
 

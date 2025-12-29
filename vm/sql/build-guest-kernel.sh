@@ -1,11 +1,11 @@
 #!/bin/bash
-# TEAM_018: Build MINIMAL guest kernel for PostgreSQL VM
+# TEAM_018: Build guest kernel for PostgreSQL VM
+# TEAM_030: Added netfilter support for Tailscale native tun mode
 #
-# Only enables what's strictly required:
+# Enables:
 # - VIRTIO_NET (VM networking)
 # - SYSVIPC (PostgreSQL shared memory)
-#
-# NO netfilter - tailscale serve handles port exposure via Layer 4 proxy
+# - NETFILTER (Tailscale native tun with fwmark routing)
 
 set -e
 
@@ -17,8 +17,8 @@ CLANG_DIR="${KERNEL_DIR}/prebuilts/clang/host/linux-x86/clang-r487747c"
 
 export PATH="${CLANG_DIR}/bin:${PATH}"
 
-echo "=== Building MINIMAL Guest Kernel ==="
-echo "Only: VIRTIO_NET + SYSVIPC (no netfilter)"
+echo "=== Building Guest Kernel with Netfilter ==="
+echo "VIRTIO + SYSVIPC + NETFILTER (for Tailscale native tun)"
 
 mkdir -p "${BUILD_DIR}"
 cd "${KERNEL_DIR}/aosp"
@@ -26,9 +26,8 @@ cd "${KERNEL_DIR}/aosp"
 # Start with defconfig
 make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 defconfig
 
-# Enable ONLY what's needed - nothing more
 # TEAM_023: Full Field Guide compliance
-# Reference: Field Guide Section 2.2
+# TEAM_030: Added netfilter for Tailscale native tun mode
 ./scripts/config --file "${BUILD_DIR}/.config" \
     --enable SYSVIPC \
     --enable VIRTIO \
@@ -38,10 +37,43 @@ make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=
     --enable VIRTIO_VSOCKETS \
     --enable HW_RANDOM \
     --enable HW_RANDOM_VIRTIO \
-    --disable ANDROID_BINDER_IPC
+    --enable TUN \
+    --disable ANDROID_BINDER_IPC \
+    \
+    --enable NETFILTER \
+    --enable NF_CONNTRACK \
+    --enable NETFILTER_XTABLES \
+    --enable NETFILTER_XT_MARK \
+    --enable NETFILTER_XT_CONNMARK \
+    --enable NETFILTER_XT_TARGET_MARK \
+    --enable NETFILTER_XT_TARGET_CONNMARK \
+    \
+    --enable NF_TABLES \
+    --enable NF_TABLES_INET \
+    --enable NF_TABLES_IPV4 \
+    --enable NFT_COMPAT \
+    --enable NFT_CT \
+    --enable NFT_NAT \
+    --enable NFT_MASQ \
+    --enable NFT_REDIR \
+    --enable NFT_REJECT \
+    --enable NFT_CHAIN_NAT \
+    --enable NFT_CHAIN_ROUTE \
+    \
+    --enable IP_NF_IPTABLES \
+    --enable IP_NF_FILTER \
+    --enable IP_NF_NAT \
+    --enable IP_NF_TARGET_MASQUERADE \
+    --enable IP_NF_TARGET_REJECT \
+    \
+    --enable IP_ADVANCED_ROUTER \
+    --enable IP_MULTIPLE_TABLES \
+    --enable IP_ROUTE_FWMARK \
+    --enable IP_ROUTE_MULTIPATH \
+    --enable FIB_RULES
 
 make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 olddefconfig
 make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 -j$(nproc) Image
 
 cp "${BUILD_DIR}/arch/arm64/boot/Image" "${OUTPUT}"
-echo "✓ Minimal kernel built: ${OUTPUT}"
+echo "✓ Guest kernel with netfilter built: ${OUTPUT}"

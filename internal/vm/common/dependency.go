@@ -29,28 +29,44 @@ func CheckDependencies(cfg *VMConfig) error {
 }
 
 // checkDependency verifies a single service dependency is available.
+// TEAM_029: First tries TAP IP (for local VM-to-VM), then Tailscale hostnames.
 func checkDependency(dep ServiceDependency) error {
 	fmt.Printf("  Checking %s (%s:%d)... ", dep.Description, dep.TailscaleHost, dep.Port)
 
-	// First check if the dependency is reachable via Tailscale
-	tsIP, connected := CheckTailscaleConnected(dep.TailscaleHost)
-	if !connected {
-		fmt.Println("✗")
-		return fmt.Errorf("%s not found on Tailscale\n"+
-			"  Start it first: sovereign start --%s", dep.TailscaleHost, dep.Name)
+	// First try TAP IP if available (for VM-to-VM on same device)
+	if dep.TAPIP != "" {
+		cmd := exec.Command("nc", "-z", "-w", "2", dep.TAPIP, fmt.Sprintf("%d", dep.Port))
+		if err := cmd.Run(); err == nil {
+			fmt.Printf("✓ (TAP: %s)\n", dep.TAPIP)
+			return nil
+		}
 	}
 
-	// Then check if the port is responding
-	cmd := exec.Command("nc", "-z", "-w", "3", dep.TailscaleHost, fmt.Sprintf("%d", dep.Port))
-	if err := cmd.Run(); err != nil {
-		fmt.Println("✗")
-		return fmt.Errorf("%s is on Tailscale (%s) but port %d not responding\n"+
-			"  Check service status: sovereign test --%s",
-			dep.TailscaleHost, tsIP, dep.Port, dep.Name)
+	// Try Tailscale hostnames (base and numbered variants)
+	hostnames := []string{
+		dep.TailscaleHost,
+		dep.TailscaleHost + "-1",
+		dep.TailscaleHost + "-2",
 	}
 
-	fmt.Printf("✓ (%s)\n", tsIP)
-	return nil
+	for _, hostname := range hostnames {
+		tsIP, connected := CheckTailscaleConnected(hostname)
+		if !connected {
+			continue
+		}
+
+		cmd := exec.Command("nc", "-z", "-w", "3", hostname, fmt.Sprintf("%d", dep.Port))
+		if err := cmd.Run(); err != nil {
+			continue
+		}
+
+		fmt.Printf("✓ (%s as %s)\n", tsIP, hostname)
+		return nil
+	}
+
+	fmt.Println("✗")
+	return fmt.Errorf("%s not found or not responding\n"+
+		"  Start it first: sovereign start --%s", dep.TailscaleHost, dep.Name)
 }
 
 // GetDependencyInfo returns connection info for a dependency.
@@ -92,9 +108,11 @@ func (d *DependencyInfo) ConnectionString(user, password, dbname string) string 
 
 // PostgreSQLDependency is a pre-configured dependency for PostgreSQL.
 // TEAM_029: Common dependency used by Forgejo and future services
+// Note: For VM-to-VM on same device, use TAP IP (192.168.100.2)
 var PostgreSQLDependency = ServiceDependency{
 	Name:          "sql",
 	TailscaleHost: "sovereign-sql",
+	TAPIP:         "192.168.100.2", // SQL VM TAP IP for local VM-to-VM
 	Port:          5432,
 	Description:   "PostgreSQL database",
 }

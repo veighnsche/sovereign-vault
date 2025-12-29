@@ -237,6 +237,163 @@ After `sovereign start --forge`:
 
 ## Common Issues
 
+### Issue: `sovereign stop` command hangs
+**Cause:** ADB shell commands can hang indefinitely without timeouts
+**Fix (TEAM_029):** 
+- `RunShellCommand()` has 30s timeout for general commands
+- `RunShellCommandQuick()` has 5s timeout for cleanup commands
+- Cleanup commands use `|| true` to prevent blocking on errors
+- After kill, verify process is dead and force kill if needed
+
+**Code locations:**
+- `internal/device/device.go` - `RunShellCommand()`, `RunShellCommandQuick()`
+- `internal/vm/common/lifecycle.go` - `StopVM()`, `cleanupNetworking()`
+
+### Issue: Forgejo crash-loops ~28s after InitWebInstalled (ACTIVE - TEAM_029/030)
+**Symptoms:**
+- Forgejo starts, shows "Prepare to run web server" and "InitWebInstalled"
+- Dies exactly ~28 seconds later with no error message
+- Supervision loop restarts it, same pattern repeats
+- `psql` from the VM works instantly
+- Forgejo never reaches "Listen: http://0.0.0.0:3000"
+
+**TEAM_030 CORRECTION - PostgreSQL driver IS included:**
+```bash
+# The --version output is MISLEADING - shows build TAGS, not available drivers
+$ forgejo --version
+Forgejo version 9.0.3 : bindata, timetzdata, sqlite, sqlite_unlock_notify
+
+# But strings shows PostgreSQL driver IS compiled in:
+$ strings /app/gitea/gitea | grep "github.com/lib/pq"
+dep     github.com/lib/pq       v1.10.9
+
+# MySQL driver also included:
+$ strings /app/gitea/gitea | grep "go-sql-driver"
+dep     github.com/go-sql-driver/mysql  v1.8.1
+```
+
+**The official Docker image HAS PostgreSQL support.** The crash cause is NOT a missing driver.
+
+**Possible causes still under investigation:**
+1. Connection timeout due to network/DNS issues
+2. Forgejo initialization sequence issue
+3. Config file not being read correctly
+4. Permission issues with data directories
+5. Something blocking during InitWebInstalled phase
+
+**Current config:** SQLite (for testing) - need to verify if SQLite works first
+
+### Issue: Tailscale State File Corruption (TEAM_030)
+**Symptom:** VM stuck waiting for Tailscale auth despite authkey in .env
+
+**Root Cause:** init.sh trusts corrupt state file:
+```bash
+# Bug: -s test passes (file non-empty) but state is INVALID
+if [ -f "$STATE_FILE" ] && [ -s "$STATE_FILE" ]; then
+    tailscale up --hostname=sovereign-forge  # No authkey!
+```
+
+Tailscale logs show `Persist=nil` despite finding state file.
+
+**Result:** 18 duplicate sovereign-forge registrations in Tailscale admin.
+
+**Fix:** Validate state file content, not just existence:
+```bash
+# Check for actual NodeID in state file
+if grep -q '"NodeID"' "$STATE_FILE" 2>/dev/null; then
+    # Valid state - reconnect
+else
+    # Invalid - use authkey from cmdline
+fi
+```
+
+**Immediate workaround:**
+```bash
+# On device - delete corrupt state and restart
+adb shell su -c 'rm /data/tailscale/tailscaled.state'
+# Also delete duplicates in Tailscale admin console
+```
+
+---
+
+---
+
+### Issue: 28s Crash Root Cause (TEAM_030 - VERIFIED ONLINE)
+
+**Source:** [Forgejo Config Cheat Sheet](https://forgejo.org/docs/latest/admin/config-cheat-sheet/)
+
+```
+DB_RETRIES: 10        # Forgejo tries 10 times to connect
+DB_RETRY_BACKOFF: 3s  # With 3 second backoff between retries
+```
+
+**10 retries × 3s = 30 seconds** - This explains the ~28s crash!
+
+Forgejo is:
+1. Trying to connect to PostgreSQL at 192.168.100.2:5432
+2. Failing each attempt (connection refused or timeout)
+3. Retrying 10 times with 3s delay
+4. Crashing after exhausting retries
+
+---
+
+### Issue: VM-to-VM Communication Architecture (TEAM_030)
+
+**Source:** [Linux Network Bridges](https://krackout.wordpress.com/2020/03/08/network-bridges-and-tun-tap-interfaces-in-linux/)
+
+**Current (BROKEN) Setup:**
+```
+vm_sql TAP: 192.168.100.0/24
+vm_forge TAP: 192.168.101.0/24
+NO BRIDGE CONNECTING THEM!
+```
+
+VMs are on **separate L2 segments** with no direct path.
+
+**Option A - Linux Bridge (RECOMMENDED):**
+```bash
+# Create shared bridge
+ip link add vm_bridge type bridge
+ip addr add 192.168.100.1/24 dev vm_bridge
+ip link set vm_bridge up
+
+# Connect BOTH TAPs to same bridge
+ip link set vm_sql master vm_bridge
+ip link set vm_forge master vm_bridge
+# Now VMs can communicate directly!
+```
+
+**Option B - Tailscale Mesh:**
+- Both VMs connect to Tailscale
+- Use Tailscale IPs (100.x.x.x) for communication
+- Requires Tailscale auth to work first
+
+**Option C - Host Routing (Current Fragile Approach):**
+- Route between 192.168.100.x and 192.168.101.x via Android host
+- Requires proper iptables FORWARD rules
+- Fragile and error-prone
+
+---
+
+### FIX VERIFIED WORKING (TEAM_030 - 2025-12-29)
+
+**Root cause:** VMs on separate subnets (192.168.100.x vs 192.168.101.x) with no bridge connecting them.
+
+**Solution implemented:**
+1. Created shared `vm_bridge` Linux bridge
+2. Both VMs now on same 192.168.100.x subnet
+3. SQL VM: 192.168.100.2, Forge VM: 192.168.100.3
+4. Fixed Tailscale state validation in init.sh
+
+**Verification:**
+```
+2025/12/29 14:00:21 cmd/web.go:304:listen() [I] Listen: http://0.0.0.0:3000
+2025/12/29 14:00:21 cmd/web.go:308:listen() [I] AppURL(ROOT_URL): http://sovereign-forge:3000/
+```
+
+**Remaining cleanup:**
+- Delete duplicate Tailscale machines from admin console
+
 ### Issue: "connection refused" to sql-vm:5432
 **Cause:** SQL VM not running or PostgreSQL not started
 **Fix:** `sovereign start --sql && sovereign test --sql`

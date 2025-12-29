@@ -59,3 +59,47 @@ After completing Phase 2, continued with Phase 3 migration:
 | **Total** | ~1284 | 1185 | -99 (8%) |
 
 **Key Achievement:** ~400 lines of duplication eliminated. Adding new services now requires only ~50 lines (config + custom tests).
+
+---
+
+## VM Stop Hang Fix (2025-12-29)
+
+### Problem
+`sovereign stop --forge` was hanging indefinitely because ADB shell commands can block forever.
+
+### Root Cause
+`exec.Command(...).Output()` has no timeout - if the device or command hangs, the host CLI hangs too.
+
+### Solution
+
+1. **Added `RunShellCommand()` with 30s timeout** in `internal/device/device.go`:
+   ```go
+   ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+   defer cancel()
+   out, err := exec.CommandContext(ctx, "adb", "shell", "su", "-c", cmd).Output()
+   ```
+
+2. **Added `RunShellCommandQuick()` with 5s timeout** for cleanup commands that should complete quickly:
+   - Silently ignores timeouts (cleanup commands are best-effort)
+   - Used for iptables rules, ip link deletion, etc.
+
+3. **Cleanup commands use `|| true`** to prevent blocking on errors:
+   ```go
+   device.RunShellCommandQuick("ip link del vm_forge 2>/dev/null || true")
+   ```
+
+4. **Verify process death** in `StopVM()`:
+   - After `kill`, wait 500ms
+   - Check if process still exists
+   - Force kill with `kill -9` if needed
+
+### Files Modified
+- `internal/device/device.go` - Added timeout functions
+- `internal/vm/common/lifecycle.go` - Used quick timeout for cleanup
+
+### Result
+`sovereign stop --forge` now completes in ~1.2s instead of hanging forever.
+
+### Documentation
+- Added to `vm/forgejo/CHECKLIST.md` under "Common Issues"
+- Added to `vm/sql/CHECKLIST.md` mistake #21
