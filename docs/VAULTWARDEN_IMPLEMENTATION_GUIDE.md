@@ -37,6 +37,9 @@ ROCKET_TLS={certs="/data/vault/tls/cert.pem",key="/data/vault/tls/key.pem"}
 
 This gives you clean URLs without port numbers: `https://sovereign-vault.tail5bea38.ts.net`
 
+> **TEAM_035 Note:** The implementation uses port 443 (not 8443 as mentioned elsewhere).
+> This is the correct approach for clean URLs.
+
 ---
 
 ## 2. TLS Certificate Pattern
@@ -182,8 +185,8 @@ Vaultwarden uses environment variables for configuration:
 ```bash
 # Required
 export DATABASE_URL="postgresql://vaultwarden:PASSWORD@192.168.100.2:5432/vaultwarden"
-export DOMAIN="https://${TS_FQDN}:8443"
-export ROCKET_PORT=8443
+export DOMAIN="https://${TS_FQDN}"
+export ROCKET_PORT=443
 export ROCKET_TLS='{certs="/data/vault/tls/cert.pem",key="/data/vault/tls/key.pem"}'
 
 # Recommended
@@ -256,7 +259,7 @@ done
 Before considering Vaultwarden complete:
 
 - [ ] HTTPS works without certificate warnings
-- [ ] Can access `https://sovereign-vault-X.tail5bea38.ts.net:8443`
+- [ ] Can access `https://sovereign-vault-X.tail5bea38.ts.net`
 - [ ] Can create account and login
 - [ ] Can save/retrieve passwords
 - [ ] Browser extension connects successfully
@@ -271,7 +274,7 @@ Before considering Vaultwarden complete:
 | Pitfall | Solution |
 |---------|----------|
 | Hardcoded hostname in config | Use dynamic detection from `tailscale status --json` |
-| Port 443 permission denied | Use port 8443 |
+| Port 443 permission denied | Use sysctl fix (see 1.2) |
 | Cert for wrong hostname | Generate cert AFTER Tailscale connects |
 | WebCrypto disabled | Must use valid HTTPS with matching cert |
 | DB connection refused | Wait for PostgreSQL before starting |
@@ -284,11 +287,11 @@ Before considering Vaultwarden complete:
 After successful deployment:
 
 ```
-Web Vault:  https://sovereign-vault-X.tail5bea38.ts.net:8443
-Admin:      https://sovereign-vault-X.tail5bea38.ts.net:8443/admin
+Web Vault:  https://sovereign-vault-X.tail5bea38.ts.net
+Admin:      https://sovereign-vault-X.tail5bea38.ts.net/admin
 ```
 
-For browser extensions and mobile apps, use the full HTTPS URL including port.
+For browser extensions and mobile apps, use the HTTPS URL (port 443 is default).
 
 ---
 

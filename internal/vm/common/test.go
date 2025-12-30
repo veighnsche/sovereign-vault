@@ -90,6 +90,26 @@ func RunVMTests(cfg *VMConfig, customTests []TestFunc) error {
 	return fmt.Errorf("some tests failed - see above")
 }
 
+// GetTailscaleFQDN returns the actual Tailscale FQDN for a VM.
+// TEAM_035: Helper for tests that need the full hostname (e.g., HTTPS tests)
+func GetTailscaleFQDN(cfg *VMConfig) string {
+	tsOut, err := exec.Command("tailscale", "status").Output()
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(tsOut), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, cfg.TailscaleHost) && !strings.Contains(line, "offline") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				// parts[1] is the hostname (e.g., sovereign-vault-1.tail5bea38.ts.net)
+				return parts[1]
+			}
+		}
+	}
+	return ""
+}
+
 // TestPortOpen checks if a port is accessible on the TAP interface.
 // TEAM_029: Helper for service-specific tests
 func TestPortOpen(cfg *VMConfig, port int) TestResult {

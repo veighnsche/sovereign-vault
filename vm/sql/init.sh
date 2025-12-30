@@ -254,6 +254,13 @@ su postgres -c "psql -c \"CREATE DATABASE forgejo OWNER forgejo;\"" 2>&1 || true
 su postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE forgejo TO forgejo;\"" 2>&1 || true
 echo "Created forgejo database user"
 
+# TEAM_035: Create vaultwarden database user for Vaultwarden VM
+# Password: PCc5zNNG6v8gwguclMQWMPjk4DUvg5F5 (also in vm/vault/CREDENTIALS.md)
+su postgres -c "psql -c \"CREATE USER vaultwarden WITH PASSWORD 'PCc5zNNG6v8gwguclMQWMPjk4DUvg5F5';\"" 2>&1 || true
+su postgres -c "psql -c \"CREATE DATABASE vaultwarden OWNER vaultwarden;\"" 2>&1 || true
+su postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE vaultwarden TO vaultwarden;\"" 2>&1 || true
+echo "Created vaultwarden database user"
+
 echo "PostgreSQL version:"
 su postgres -c "psql -c \"SELECT version();\"" 2>&1
 
