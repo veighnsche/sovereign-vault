@@ -1,24 +1,26 @@
 #!/bin/bash
-# TEAM_018: Build guest kernel for PostgreSQL VM
-# TEAM_030: Added netfilter support for Tailscale native tun mode
+# TEAM_034: Shared guest kernel builder for all VMs
+# Previously in vm/sql/ - moved to shared location since Forgejo reuses SQL's kernel
 #
-# Enables:
-# - VIRTIO_NET (VM networking)
+# Required by: PostgreSQL, Forgejo, future VMs
+# Features:
+# - VIRTIO (crosvm networking, block devices)
 # - SYSVIPC (PostgreSQL shared memory)
-# - NETFILTER (Tailscale native tun with fwmark routing)
+# - TUN (Tailscale native mode)
+# - Netfilter (Tailscale fwmark routing)
 
 set -e
 
-KERNEL_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+KERNEL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 SOVEREIGN_DIR="${KERNEL_DIR}/sovereign"
 BUILD_DIR="${KERNEL_DIR}/out/guest-kernel"
-OUTPUT="${SOVEREIGN_DIR}/vm/sql/Image"
+OUTPUT="${SOVEREIGN_DIR}/vm/sql/Image"  # SQL is the primary; Forgejo uses SharedKernel
 CLANG_DIR="${KERNEL_DIR}/prebuilts/clang/host/linux-x86/clang-r487747c"
 
 export PATH="${CLANG_DIR}/bin:${PATH}"
 
-echo "=== Building Guest Kernel with Netfilter ==="
-echo "VIRTIO + SYSVIPC + NETFILTER (for Tailscale native tun)"
+echo "=== Building Shared Guest Kernel ==="
+echo "Features: VIRTIO + SYSVIPC + TUN + Netfilter"
 
 mkdir -p "${BUILD_DIR}"
 cd "${KERNEL_DIR}/aosp"
@@ -26,10 +28,10 @@ cd "${KERNEL_DIR}/aosp"
 # Start with defconfig
 make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 defconfig
 
-# TEAM_023: Full Field Guide compliance
-# TEAM_030: Added netfilter for Tailscale native tun mode
+# Configure kernel options
 ./scripts/config --file "${BUILD_DIR}/.config" \
     --enable SYSVIPC \
+    \
     --enable VIRTIO \
     --enable VIRTIO_PCI \
     --enable VIRTIO_NET \
@@ -37,6 +39,7 @@ make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=
     --enable VIRTIO_VSOCKETS \
     --enable HW_RANDOM \
     --enable HW_RANDOM_VIRTIO \
+    \
     --enable TUN \
     --disable ANDROID_BINDER_IPC \
     \
@@ -76,4 +79,6 @@ make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=
 make O="${BUILD_DIR}" ARCH=arm64 CC=clang CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 -j$(nproc) Image
 
 cp "${BUILD_DIR}/arch/arm64/boot/Image" "${OUTPUT}"
-echo "✓ Guest kernel with netfilter built: ${OUTPUT}"
+echo ""
+echo "✓ Guest kernel built: ${OUTPUT}"
+echo "  Used by: SQL VM (primary), Forgejo VM (SharedKernel)"

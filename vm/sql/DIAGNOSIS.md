@@ -272,27 +272,26 @@ and `--notrim` flags, or build from standard `defconfig` instead.
 
 ---
 
-### Solution B: Tailscale Serve (Layer 4 Proxy) - SIMPLER!
+### Solution B: Direct Port Binding (RECOMMENDED - TEAM_034)
 
-**When to use**: Just need to expose a TCP service like PostgreSQL.
+**TEAM_034 verified**: `tailscale serve` is NOT needed. Direct port binding works!
 
-**How it works**: `tailscale serve` acts as a reverse proxy - no kernel TUN needed!
+**How it works**: Services listen on `0.0.0.0`, which binds to all interfaces including tailscale0. Tailscale routes inbound traffic directly.
 
 ```bash
-# Inside the VM (with userspace networking):
-tailscaled --tun=userspace-networking &
-tailscale up --authkey=...
-tailscale serve --bg --tcp 5432 5432
+# Inside the VM:
+tailscaled &  # Native tun mode
+tailscale up --authkey=... --hostname=sovereign-sql
+# PostgreSQL already listens on 0.0.0.0:5432 - that's all you need!
 ```
 
-**Benefits**:
-- Works with stock microdroid/GKI kernel
-- No kernel compilation needed
-- Auto-updates with Tailscale
-- Simple single command
+**Why this works**:
+- Tailscale's fwmark only affects OUTBOUND connections
+- INBOUND traffic to tailscale0 works fine
+- No proxy overhead
 
-**Caveat**: PostgreSQL sees connections from 127.0.0.1, not the original Tailscale IP.
-Use Tailscale ACLs for access control instead of pg_hba.conf IP rules.
+**DO NOT USE `tailscale serve`** - it doesn't work in AVF VMs due to fwmark routing.
+See `docs/TAILSCALE_AVF_LIMITATIONS.md` for details.
 
 ---
 

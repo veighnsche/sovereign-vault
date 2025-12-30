@@ -244,3 +244,71 @@ Google uses JSON with variable substitution (`$APP_DATA_DIR`, `$PAYLOAD_DIR`):
 
 ### Status
 **PHASE 2 COMPLETE** - Architecture analysis done, design documents created.
+
+---
+
+## Phase 3: Project Status Documentation
+
+### Task
+Document project status for future teams - what's done, what's remaining, and the path to completion.
+
+### Deliverable
+Created `docs/PROJECT_STATUS.md` with:
+- Executive summary (80% complete)
+- What's DONE and WORKING (table)
+- What's BLOCKED and the fix (subnet router)
+- Remaining tasks with priorities
+- Architecture decisions made
+- Verification commands
+- Gotchas for future teams
+- Path to completion timeline
+
+### Status
+**PHASE 3 COMPLETE** - Documentation created.
+
+---
+
+---
+
+## Phase 4: Critical Discovery - Direct Port Binding Works!
+
+### Task
+Test hypothesis that services can be accessed directly on Tailscale IP without `tailscale serve`.
+
+### Result: SUCCESS ✅
+
+```bash
+# From dev workstation (external Tailscale device):
+nc -zv sovereign-sql.tail5bea38.ts.net 5432
+# Connection to sovereign-sql.tail5bea38.ts.net (100.119.99.33) 5432 port [tcp/postgres] succeeded!
+```
+
+### Why It Works
+
+The fwmark issue only affects **OUTBOUND** connections from tailscaled:
+- `tailscale serve` creates a proxy that makes OUTBOUND connections → blocked
+- Direct service listening receives INBOUND connections → works fine
+
+### Implications
+
+1. **Keep Tailscale in VMs** - each VM gets DNS name (forge.tail5bea38.ts.net)
+2. **Remove `tailscale serve`** - not needed, causes confusion
+3. **Services listen on 0.0.0.0** - standard configuration
+
+### Status
+**PHASE 4 COMPLETE** - Direct port binding verified working.
+
+---
+
+## Handoff Checklist (Final)
+
+- [x] Root cause identified (Tailscale fwmark affects OUTBOUND only)
+- [x] Bug fixes implemented (6 bugs)
+- [x] Direct port binding verified working
+- [x] Android app architecture analyzed (alternative path, not needed)
+- [x] Design documents created
+- [x] Project status documented for future teams
+- [x] Documentation updated with discovery
+- [ ] Remove `tailscale serve` from init scripts
+- [ ] Complete Forgejo integration
+- [ ] Add Vaultwarden VM

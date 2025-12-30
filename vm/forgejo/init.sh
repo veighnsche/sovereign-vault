@@ -190,12 +190,9 @@ else
     fi
 fi
 
-# TEAM_030: Expose Forgejo ports via Tailscale serve
-# Native tun's fwmark routing interferes with localhost - use TAP IP instead
-# - Port 3000: Forgejo web UI
-# - Port 22: Git SSH access
-/usr/bin/tailscale serve --bg --tcp 3000 tcp://192.168.100.3:3000 2>&1 || true
-/usr/bin/tailscale serve --bg --tcp 22 tcp://192.168.100.3:22 2>&1 || true
+# TEAM_034: Removed tailscale serve - not needed!
+# Direct port binding works: Forgejo listens on 0.0.0.0, Tailscale routes inbound
+# traffic directly to tailscale0 interface. See TAILSCALE_AVF_LIMITATIONS.md
 
 /usr/bin/tailscale status 2>&1
 
@@ -249,6 +246,54 @@ else
 fi
 
 # ============================================================================
+# TEAM_034: Generate TLS certificates using Tailscale
+# ============================================================================
+echo "=== Generating TLS Certificates ==="
+mkdir -p /data/forgejo/tls
+
+# Get the ACTUAL Tailscale hostname (may be sovereign-forge-1, sovereign-forge-2, etc.)
+TS_FQDN=$(/usr/bin/tailscale status --json | grep -o '"DNSName":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//')
+if [ -z "$TS_FQDN" ]; then
+    # Fallback: get from tailscale cert --help output which shows available domains
+    TS_FQDN=$(/usr/bin/tailscale cert 2>&1 | grep -o '[a-z0-9-]*\.tail[a-z0-9]*\.ts\.net' | head -1)
+fi
+echo "Tailscale FQDN: $TS_FQDN"
+
+# Generate cert for the actual hostname
+if [ -n "$TS_FQDN" ]; then
+    /usr/bin/tailscale cert --cert-file=/data/forgejo/tls/cert.pem --key-file=/data/forgejo/tls/key.pem "$TS_FQDN" 2>&1 || {
+        echo "WARNING: Failed to generate TLS cert for $TS_FQDN"
+    }
+    # Save the FQDN for app.ini updates
+    echo "$TS_FQDN" > /data/forgejo/tls/fqdn.txt
+else
+    echo "ERROR: Could not determine Tailscale FQDN"
+fi
+
+chown -R forgejo:forgejo /data/forgejo/tls
+chmod 600 /data/forgejo/tls/key.pem 2>/dev/null || true
+
+# ============================================================================
+# TEAM_034: Update app.ini with actual Tailscale hostname
+# ============================================================================
+if [ -f /data/forgejo/tls/fqdn.txt ]; then
+    TS_FQDN=$(cat /data/forgejo/tls/fqdn.txt)
+    echo "Updating app.ini with hostname: $TS_FQDN"
+    # Update DOMAIN and ROOT_URL in app.ini
+    sed -i "s|^DOMAIN = .*|DOMAIN = $TS_FQDN|" /etc/forgejo/app.ini
+    sed -i "s|^ROOT_URL = .*|ROOT_URL = https://$TS_FQDN/|" /etc/forgejo/app.ini
+    sed -i "s|^SSH_DOMAIN = .*|SSH_DOMAIN = $TS_FQDN|" /etc/forgejo/app.ini
+fi
+
+# ============================================================================
+# TEAM_034: Allow non-root to bind to port 443
+# ============================================================================
+# Lower the unprivileged port start from 1024 to 443
+# This allows the forgejo user to bind directly to port 443
+echo 443 > /proc/sys/net/ipv4/ip_unprivileged_port_start
+echo "Unprivileged port start set to 443"
+
+# ============================================================================
 # TEAM_025: Start Forgejo
 # ============================================================================
 echo "=== Starting Forgejo ==="
@@ -293,8 +338,7 @@ while true; do
             --socket=/var/run/tailscale/tailscaled.sock &
         TAILSCALED_PID=$!
         sleep 3
-        /usr/bin/tailscale serve --bg --tcp 3000 tcp://192.168.100.3:3000 2>&1 || true
-        /usr/bin/tailscale serve --bg --tcp 22 tcp://192.168.100.3:22 2>&1 || true
+        # TEAM_034: tailscale serve removed - direct port binding works
     fi
     
     sleep 30

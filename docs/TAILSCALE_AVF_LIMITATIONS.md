@@ -1,8 +1,20 @@
-# TEAM_030: Tailscale Port Exposure in AVF VMs - Unsolved Problem
+# Tailscale Port Exposure in AVF VMs
 
-## Status: RESOLVED (TEAM_033)
+## Status: ✅ IMPLEMENTED (TEAM_034)
 
-**Solution**: Subnet router implemented in SQL VM. See "Solution Implemented" section below.
+**TEAM_033 Discovery (2025-12-29)**: `tailscale serve` is NOT needed. Services just need to listen on any routable interface.
+
+**TEAM_034 Implementation (2025-12-30)**: Removed `tailscale serve` from all init scripts. Direct port binding now in use.
+
+### The Working Solution
+
+```bash
+# From external Tailscale device (verified working):
+nc -zv sovereign-sql.tail5bea38.ts.net 5432
+# Connection to sovereign-sql.tail5bea38.ts.net (100.119.99.33) 5432 port [tcp/postgres] succeeded!
+```
+
+**Why it works**: PostgreSQL listens on `192.168.100.2:5432`. Tailscale routes incoming traffic to the VM's `tailscale0` interface. The service responds directly - no proxy involved, no fwmark issue.
 
 This document captures extensive investigation into exposing VM services via Tailscale in Android Virtualization Framework (AVF) VMs.
 
@@ -105,11 +117,19 @@ The `tailscale serve` proxy runs inside tailscaled, so its connections inherit t
 
 ---
 
-## Solution Implemented (TEAM_033)
+## Solution Implemented (TEAM_034)
 
-### Subnet Router in SQL VM
+### Direct Port Binding (Primary)
 
-The SQL VM now advertises the VM subnet (192.168.100.0/24) as a Tailscale subnet router:
+Services listen on `0.0.0.0` which binds to all interfaces including tailscale0. Inbound Tailscale traffic arrives directly - no proxy needed.
+
+**TEAM_034 removed `tailscale serve` from:**
+- `vm/sql/init.sh` (lines 264, 293)
+- `vm/forgejo/init.sh` (lines 197-198, 296-297)
+
+### Subnet Router in SQL VM (Backup)
+
+The SQL VM also advertises the VM subnet (192.168.100.0/24) as a Tailscale subnet router:
 
 ```bash
 # In vm/sql/init.sh
@@ -201,19 +221,20 @@ CONFIG_FIB_RULES=y
 
 ---
 
-## Current Workaround
+## Current Status (WORKING)
 
-VMs communicate with each other via bridge network (192.168.100.0/24):
-- SQL VM: 192.168.100.2
-- Forgejo VM: 192.168.100.3
+VMs are accessible via Tailscale DNS names:
+- **PostgreSQL**: `sovereign-sql.tail5bea38.ts.net:5432` ✅ VERIFIED
+- **Forgejo**: `sovereign-forge.tail5bea38.ts.net:3000` (pending setup)
+- **Vaultwarden**: `sovereign-vault.tail5bea38.ts.net:8080` (pending setup)
 
-Forgejo can reach PostgreSQL. But external Tailscale access remains unresolved.
+**Key insight**: `tailscale serve` was a red herring. Direct port binding works fine.
 
 ---
 
 ## Files Modified
 
-- `vm/sql/build-guest-kernel.sh` - Added nftables configs
+- `vm/build-guest-kernel.sh` - Shared kernel with nftables configs
 - `vm/sql/init.sh` - Tailscale startup, tailscale serve placement
 - `vm/forgejo/init.sh` - Same
 
@@ -221,7 +242,21 @@ Forgejo can reach PostgreSQL. But external Tailscale access remains unresolved.
 
 ## Team Notes
 
-- TEAM_030 spent significant effort on this problem
-- The memory system has a misleading entry about "Solution B: Tailscale Serve" working - it doesn't
-- The fundamental issue is Tailscale's network isolation, not missing kernel configs
-- Future teams should consider alternative architectures (reverse proxy on host, subnet routing)
+- TEAM_030 spent significant effort investigating `tailscale serve` - it doesn't work
+- TEAM_033 discovered that direct port binding works - no `tailscale serve` needed
+- **TEAM_034 implemented the fix** - removed `tailscale serve` from all init scripts
+- The subnet router approach also works for accessing VMs via TAP IPs
+- **Don't use `tailscale serve`** - just have services listen on a routable interface
+
+### What You Need For Forgejo/Vaultwarden
+
+Just configure the service to listen on `0.0.0.0` or a specific IP:
+
+```ini
+# Forgejo app.ini
+[server]
+HTTP_ADDR = 0.0.0.0
+HTTP_PORT = 3000
+```
+
+Then access via `sovereign-forge.tail5bea38.ts.net:3000`

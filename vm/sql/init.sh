@@ -178,10 +178,9 @@ fi
 if [ "$STATE_VALID" = "true" ]; then
     # We have valid saved state - reconnect without authkey (preserves machine identity!)
     echo "Tailscale: Found valid persistent state, reconnecting..."
-    # TEAM_033: Advertise VM subnet as subnet router - enables external Tailscale access
-    # This is the fix for the tailscale serve limitation documented in TAILSCALE_AVF_LIMITATIONS.md
-    /usr/bin/tailscale up --hostname=sovereign-sql --advertise-routes=192.168.100.0/24 --accept-routes 2>&1
-    # TEAM_030: tailscale serve moved to after PostgreSQL starts (port conflict)
+    # TEAM_034: Direct port binding works - no subnet routing needed
+    # PostgreSQL listens on 0.0.0.0, Tailscale routes inbound traffic directly
+    /usr/bin/tailscale up --hostname=sovereign-sql --accept-routes 2>&1
 else
     # First boot or invalid state - need authkey for registration
     echo "Tailscale: No valid state, using authkey for registration..."
@@ -194,9 +193,8 @@ else
     if [ -n "$AUTHKEY" ]; then
         # Delete invalid state file if exists
         rm -f "$STATE_FILE" 2>/dev/null
-        # TEAM_033: Advertise VM subnet as subnet router - enables external Tailscale access
-        /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-sql --advertise-routes=192.168.100.0/24 --accept-routes 2>&1
-        # TEAM_030: tailscale serve moved to after PostgreSQL starts (port conflict)
+        # TEAM_034: Direct port binding works - no subnet routing needed
+        /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-sql --accept-routes 2>&1
     else
         echo "WARNING: No authkey for first-time registration"
     fi
@@ -259,9 +257,9 @@ echo "Created forgejo database user"
 echo "PostgreSQL version:"
 su postgres -c "psql -c \"SELECT version();\"" 2>&1
 
-# TEAM_030: Set up tailscale serve AFTER PostgreSQL is running (avoids port conflict)
-# Use TAP IP - native tun's fwmark routing interferes with localhost
-/usr/bin/tailscale serve --bg --tcp 5432 tcp://192.168.100.2:5432 2>&1 || true
+# TEAM_034: Removed tailscale serve - not needed!
+# Direct port binding works: PostgreSQL listens on 0.0.0.0, Tailscale routes inbound
+# traffic directly to tailscale0 interface. See TAILSCALE_AVF_LIMITATIONS.md
 
 # CRITICAL: These messages are monitored by the host to detect successful boot
 log "PostgreSQL started"
@@ -289,8 +287,7 @@ while true; do
             --socket=/var/run/tailscale/tailscaled.sock &
         TAILSCALED_PID=$!
         sleep 3
-        # TEAM_030: Native tun's fwmark routing interferes with localhost - use TAP IP
-        /usr/bin/tailscale serve --bg --tcp 5432 tcp://192.168.100.2:5432 2>&1 || true
+        # TEAM_034: tailscale serve removed - direct port binding works
     fi
     
     sleep 30

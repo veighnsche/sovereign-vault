@@ -9,6 +9,10 @@ import (
 	"github.com/anthropics/sovereign/internal/device"
 )
 
+// FreshDataDeploy forces wiping data.img and re-registering Tailscale
+// TEAM_034: Package-level flag for --fresh-data CLI option
+var FreshDataDeploy bool
+
 // DeployVM deploys a VM to the Android device.
 // TEAM_029: Extracted from sql/sql.go Deploy() and forge/forge.go Deploy()
 func DeployVM(cfg *VMConfig) error {
@@ -53,12 +57,31 @@ func DeployVM(cfg *VMConfig) error {
 		return err
 	}
 
-	// Push data disk
-	fmt.Println("Pushing data.img...")
-	if err := device.PushFile(
-		fmt.Sprintf("%s/data.img", cfg.LocalPath),
-		fmt.Sprintf("%s/data.img", cfg.DevicePath)); err != nil {
-		return err
+	// Push data disk - BUT PRESERVE IF EXISTS (contains Tailscale state!)
+	// TEAM_034: Only push data.img if it doesn't exist on device OR --fresh-data flag
+	// This preserves Tailscale machine identity across redeploys
+	dataImgDevice := fmt.Sprintf("%s/data.img", cfg.DevicePath)
+	if FreshDataDeploy {
+		// User explicitly wants a fresh start - clean up old Tailscale registrations
+		fmt.Println("--fresh-data: Cleaning up old Tailscale registrations...")
+		if err := RemoveTailscaleRegistrations(cfg.TailscaleHost); err != nil {
+			fmt.Printf("  ⚠ Warning: %v\n", err)
+		}
+		fmt.Println("Pushing fresh data.img (new Tailscale identity)...")
+		if err := device.PushFile(
+			fmt.Sprintf("%s/data.img", cfg.LocalPath),
+			dataImgDevice); err != nil {
+			return err
+		}
+	} else if device.FileExists(dataImgDevice) {
+		fmt.Println("Preserving existing data.img (contains Tailscale identity)")
+	} else {
+		fmt.Println("Pushing data.img (first deploy)...")
+		if err := device.PushFile(
+			fmt.Sprintf("%s/data.img", cfg.LocalPath),
+			dataImgDevice); err != nil {
+			return err
+		}
 	}
 
 	// Push kernel

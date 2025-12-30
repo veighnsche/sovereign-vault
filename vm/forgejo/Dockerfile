@@ -25,7 +25,8 @@ RUN apk add --no-cache \
     ca-certificates \
     iproute2 \
     bash \
-    postgresql-client
+    postgresql-client \
+    libcap
 
 # TEAM_029: Extract Forgejo binary from official Docker image
 # The Docker image has PostgreSQL support, the standalone binary doesn't!
