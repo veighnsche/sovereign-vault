@@ -82,6 +82,16 @@ KPARAMS="earlycon console=ttyS0 root=/dev/vda rw init=/sbin/init.sh"
 if [ -n "$TAILSCALE_AUTHKEY" ]; then
     KPARAMS="$KPARAMS tailscale.authkey=$TAILSCALE_AUTHKEY"
 fi
+# TEAM_035: Pass secrets from .env (centralized secrets)
+if [ -n "$POSTGRES_FORGEJO_PASSWORD" ]; then
+    KPARAMS="$KPARAMS forgejo.db_password=$POSTGRES_FORGEJO_PASSWORD"
+fi
+if [ -n "$FORGEJO_SECRET_KEY" ]; then
+    KPARAMS="$KPARAMS forgejo.secret_key=$FORGEJO_SECRET_KEY"
+fi
+if [ -n "$FORGEJO_INTERNAL_TOKEN" ]; then
+    KPARAMS="$KPARAMS forgejo.internal_token=$FORGEJO_INTERNAL_TOKEN"
+fi
 
 # Start VM with TAP networking
 # TEAM_025: data.img as second block device (/dev/vdb) for persistent storage

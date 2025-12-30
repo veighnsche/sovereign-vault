@@ -37,6 +37,19 @@ log() {
 log "=== INIT START $(date) ==="
 log "Console device: $CONSOLE"
 
+# TEAM_035: Read secrets from kernel cmdline (centralized in .env)
+FORGEJO_DB_PASS=""
+FORGEJO_SECRET_KEY=""
+FORGEJO_INTERNAL_TOKEN=""
+for param in $(cat /proc/cmdline); do
+    case "$param" in
+        forgejo.db_password=*) FORGEJO_DB_PASS="${param#forgejo.db_password=}" ;;
+        forgejo.secret_key=*) FORGEJO_SECRET_KEY="${param#forgejo.secret_key=}" ;;
+        forgejo.internal_token=*) FORGEJO_INTERNAL_TOKEN="${param#forgejo.internal_token=}" ;;
+    esac
+done
+log "Secrets loaded from cmdline: db_pass=${FORGEJO_DB_PASS:+SET} secret_key=${FORGEJO_SECRET_KEY:+SET} internal_token=${FORGEJO_INTERNAL_TOKEN:+SET}"
+
 # Set hostname
 hostname sovereign-forge
 
@@ -209,6 +222,8 @@ DB_HOST="192.168.100.2"
 DB_PORT="5432"
 DB_USER="forgejo"
 DB_NAME="forgejo"
+# TEAM_035: Use password from .env (passed via cmdline), fallback to default
+DB_PASS="${FORGEJO_DB_PASS:-forgejo}"
 DB_URI="postgres://${DB_USER}:***@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
 log "PostgreSQL URI: $DB_URI"
@@ -239,7 +254,8 @@ fi
 log "Testing PostgreSQL protocol connection..."
 echo "Testing PostgreSQL protocol connection..."
 if command -v psql >/dev/null 2>&1; then
-    PGPASSWORD=forgejo psql -h "$DB_HOST" -U forgejo -d forgejo -c "SELECT 1;" 2>&1 | head -5 || log "psql test failed"
+    # TEAM_035: Use password from .env
+    PGPASSWORD="$DB_PASS" psql -h "$DB_HOST" -U forgejo -d forgejo -c "SELECT 1;" 2>&1 | head -5 || log "psql test failed"
 else
     log "psql not available, testing with nc verbose..."
     echo "QUIT" | nc -v -w 5 "$DB_HOST" "$DB_PORT" 2>&1 | head -5 || true
@@ -283,6 +299,20 @@ if [ -f /data/forgejo/tls/fqdn.txt ]; then
     sed -i "s|^DOMAIN = .*|DOMAIN = $TS_FQDN|" /etc/forgejo/app.ini
     sed -i "s|^ROOT_URL = .*|ROOT_URL = https://$TS_FQDN/|" /etc/forgejo/app.ini
     sed -i "s|^SSH_DOMAIN = .*|SSH_DOMAIN = $TS_FQDN|" /etc/forgejo/app.ini
+fi
+
+# TEAM_035: Update app.ini with secrets from .env (passed via cmdline)
+if [ -n "$FORGEJO_DB_PASS" ]; then
+    sed -i "s|^PASSWD = .*|PASSWD = $FORGEJO_DB_PASS|" /etc/forgejo/app.ini
+    log "Updated database password in app.ini"
+fi
+if [ -n "$FORGEJO_SECRET_KEY" ]; then
+    sed -i "s|^SECRET_KEY = .*|SECRET_KEY = $FORGEJO_SECRET_KEY|" /etc/forgejo/app.ini
+    log "Updated SECRET_KEY in app.ini"
+fi
+if [ -n "$FORGEJO_INTERNAL_TOKEN" ]; then
+    sed -i "s|^INTERNAL_TOKEN = .*|INTERNAL_TOKEN = $FORGEJO_INTERNAL_TOKEN|" /etc/forgejo/app.ini
+    log "Updated INTERNAL_TOKEN in app.ini"
 fi
 
 # ============================================================================

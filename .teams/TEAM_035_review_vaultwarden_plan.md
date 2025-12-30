@@ -287,3 +287,52 @@ go build -o sovereign ./cmd/sovereign
 - [x] Build verified
 - [x] No manual steps required
 
+---
+
+## Phase 3: Edge Case Fixes (2025-12-30)
+
+### Issues Found During Testing
+
+1. **TLS cert generation failed** - DNS resolver not configured
+2. **Vaultwarden crashed** - web-vault directory shadowed by /data mount
+3. **Forge test used wrong URL** - HTTP:3000 instead of HTTPS:443
+
+### Fixes Applied
+
+| File | Fix |
+|------|-----|
+| `vm/vault/init.sh` | Added `nameserver 8.8.8.8` to /etc/resolv.conf |
+| `vm/vault/init.sh` | Added proper NTP sync after Tailscale is up |
+| `vm/vault/init.sh` | Added fallback self-signed cert generation |
+| `vm/vault/Dockerfile` | Moved web-vault to `/usr/share/vaultwarden/web-vault` |
+| `vm/vault/Dockerfile` | Added `openssl` package |
+| `internal/rootfs/rootfs.go` | Added vault VM type detection in `findInitScript()` |
+| `internal/vm/forge/verify.go` | Updated test to use HTTPS with dynamic FQDN |
+
+### Root Causes
+
+1. **DNS Issue**: VM's `/etc/resolv.conf` was empty, causing ACME lookups to fail with IPv6 ::1
+2. **web-vault Shadowing**: Dockerfile put web-vault at `/data/vault/web-vault`, but `data.img` is mounted at `/data`, shadowing the directory
+3. **Forge Test**: Used static hostname and HTTP:3000, but Forgejo now uses HTTPS:443 with dynamic FQDN
+
+### Final Test Results
+
+```
+=== Testing PostgreSQL VM ===
+All 5 tests PASSED (sovereign-sql-2)
+
+=== Testing Forgejo VM ===
+All 5 tests PASSED (sovereign-forge-1)
+
+=== Testing Vaultwarden VM ===
+All 5 tests PASSED (sovereign-vault)
+```
+
+### Handoff Checklist
+
+- [x] All three VMs build successfully
+- [x] All three VMs deploy successfully
+- [x] All three VMs start successfully
+- [x] All 15 tests pass
+- [x] TLS certificates generate properly
+- [x] Services accessible via Tailscale HTTPS

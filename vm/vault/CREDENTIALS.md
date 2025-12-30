@@ -1,6 +1,6 @@
 # Vaultwarden Credentials
 
-> **TEAM_035**: Generated credentials for Vaultwarden VM
+> **TEAM_035**: Credentials centralized in `.env` (not in source control)
 
 ## Database Credentials
 
@@ -10,36 +10,40 @@
 | **Port** | `5432` |
 | **Database** | `vaultwarden` |
 | **Username** | `vaultwarden` |
-| **Password** | `PCc5zNNG6v8gwguclMQWMPjk4DUvg5F5` |
+| **Password** | See `POSTGRES_VAULTWARDEN_PASSWORD` in `.env` |
 
 ### Connection String
 ```
-postgresql://vaultwarden:PCc5zNNG6v8gwguclMQWMPjk4DUvg5F5@192.168.100.2:5432/vaultwarden
+postgresql://vaultwarden:${POSTGRES_VAULTWARDEN_PASSWORD}@192.168.100.2:5432/vaultwarden
 ```
+
+## How Secrets Work
+
+All secrets are centralized in `.env` (gitignored) and passed to VMs via kernel cmdline:
+
+1. `.env` contains `POSTGRES_VAULTWARDEN_PASSWORD` and `VAULTWARDEN_ADMIN_TOKEN`
+2. `start.sh` reads `.env` and passes secrets via kernel cmdline
+3. `init.sh` reads secrets from `/proc/cmdline` at boot
+4. No secrets in source control!
 
 ## How to Change Password
 
-1. **Update SQL VM init.sh** (`vm/sql/init.sh:259`):
+1. **Update `.env`**:
    ```bash
-   su postgres -c "psql -c \"CREATE USER vaultwarden WITH PASSWORD 'NEW_PASSWORD';\""
+   POSTGRES_VAULTWARDEN_PASSWORD=your_new_password
    ```
 
-2. **Update Vault VM init.sh** (`vm/vault/init.sh:201`):
+2. **Redeploy with fresh data** (recreates database users):
    ```bash
-   export DATABASE_URL="postgresql://vaultwarden:NEW_PASSWORD@192.168.100.2:5432/vaultwarden"
-   ```
-
-3. **Rebuild both VMs**:
-   ```bash
-   ./sovereign build --sql
-   ./sovereign build --vault
    ./sovereign deploy --sql --fresh-data
    ./sovereign deploy --vault --fresh-data
+   ./sovereign start --sql
+   ./sovereign start --vault
    ```
 
 ## Security Notes
 
-- Password is stored in source control (same pattern as Forgejo)
-- Database is only accessible via internal bridge network (192.168.100.0/24)
+- Secrets stored in `.env` (gitignored, NOT in source control)
+- Database only accessible via internal bridge network (192.168.100.0/24)
 - Traffic never leaves the Android device
-- For production, consider using the secrets system (`internal/secrets/secrets.go`)
+- Admin panel enabled if `VAULTWARDEN_ADMIN_TOKEN` is set

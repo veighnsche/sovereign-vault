@@ -24,15 +24,30 @@ log() {
 log "=== Vaultwarden VM Init Starting ==="
 
 # ============================================================================
-# Mount filesystems
+# TEAM_035: Read secrets from kernel cmdline (centralized in .env)
 # ============================================================================
-mount -t proc proc /proc
-mount -t sysfs sys /sys
-mount -t devtmpfs dev /dev
-mkdir -p /dev/pts /dev/shm /run
-mount -t devpts devpts /dev/pts
-mount -t tmpfs -o mode=1777 tmpfs /dev/shm
-mount -t tmpfs tmpfs /run
+VAULTWARDEN_DB_PASS=""
+VAULTWARDEN_ADMIN_TOKEN=""
+for param in $(cat /proc/cmdline 2>/dev/null); do
+    case "$param" in
+        vaultwarden.db_password=*) VAULTWARDEN_DB_PASS="${param#vaultwarden.db_password=}" ;;
+        vaultwarden.admin_token=*) VAULTWARDEN_ADMIN_TOKEN="${param#vaultwarden.admin_token=}" ;;
+    esac
+done
+log "Secrets loaded: db_pass=${VAULTWARDEN_DB_PASS:+SET} admin_token=${VAULTWARDEN_ADMIN_TOKEN:+SET}"
+
+# ============================================================================
+# Mount filesystems (use || true to handle already-mounted cases)
+# TEAM_035: Match SQL init.sh pattern - kernel may pre-mount devtmpfs
+# ============================================================================
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+mkdir -p /dev/pts /dev/shm /run /tmp
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs -o mode=1777 tmpfs /dev/shm 2>/dev/null || true
+mount -t tmpfs tmpfs /run 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
 # Create required directories
 mkdir -p /var/run/tailscale /var/lib/tailscale /data/tailscale
@@ -66,6 +81,8 @@ ip link set lo up
 ip link set eth0 up
 ip addr add 192.168.100.4/24 dev eth0
 ip route add default via 192.168.100.1
+# TEAM_035: Set DNS resolver (required for ACME/Let's Encrypt cert generation)
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
 
 log "Network configured: $(ip addr show eth0 | grep inet)"
 
@@ -74,10 +91,14 @@ log "Testing internet connectivity..."
 ping -c 2 8.8.8.8 2>&1 || log "WARNING: Internet not reachable"
 
 # ============================================================================
-# Time synchronization (CRITICAL for TLS)
+# Time synchronization (CRITICAL for TLS - must complete BEFORE Tailscale)
+# TEAM_035: Set approximate time first (ntpd needs DNS which needs Tailscale)
+# We'll do proper NTP sync after Tailscale is up
 # ============================================================================
-log "=== Syncing Time ==="
-ntpd -n -q -p pool.ntp.org 2>&1 &
+log "=== Setting Initial Time ==="
+# Set approximate time for TLS cert validation (will be refined by NTP later)
+date -s "2025-12-30 12:00:00" 2>/dev/null || true
+log "Initial time set: $(date)"
 
 # ============================================================================
 # Start Tailscale
@@ -103,7 +124,7 @@ fi
 
 if [ "$STATE_VALID" = "true" ]; then
     log "Tailscale: Using existing machine identity"
-    /usr/bin/tailscale up --hostname=sovereign-vault --accept-routes 2>&1
+    /usr/bin/tailscale up --hostname=sovereign-vault --accept-routes --reset 2>&1
 else
     log "Tailscale: No valid state, using authkey for registration..."
     # Get authkey from kernel command line
@@ -115,13 +136,20 @@ else
     done
     if [ -n "$AUTHKEY" ]; then
         rm -f "$STATE_FILE" 2>/dev/null
-        /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-vault 2>&1
+        /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-vault --reset 2>&1
     else
         log "WARNING: No authkey for first-time registration"
     fi
 fi
 
 /usr/bin/tailscale status 2>&1
+
+# TEAM_035: Sync time properly now that DNS works via Tailscale
+log "=== Syncing Time via NTP ==="
+if command -v ntpd >/dev/null 2>&1; then
+    ntpd -d -q -n -p pool.ntp.org 2>&1 || true
+fi
+log "Current time: $(date)"
 
 # ============================================================================
 # TEAM_034: Generate TLS certificates using Tailscale
@@ -138,13 +166,23 @@ log "Tailscale FQDN: $TS_FQDN"
 
 # Generate cert for actual hostname
 if [ -n "$TS_FQDN" ]; then
-    /usr/bin/tailscale cert \
+    log "Requesting TLS cert for: $TS_FQDN"
+    if /usr/bin/tailscale cert \
         --cert-file=/data/vault/tls/cert.pem \
         --key-file=/data/vault/tls/key.pem \
-        "$TS_FQDN" 2>&1 || {
+        "$TS_FQDN" 2>&1; then
+        log "TLS cert generated successfully"
+        echo "$TS_FQDN" > /data/vault/tls/fqdn.txt
+    else
         log "WARNING: Failed to generate TLS cert for $TS_FQDN"
-    }
-    echo "$TS_FQDN" > /data/vault/tls/fqdn.txt
+        log "Vaultwarden will NOT work without HTTPS - WebCrypto requires secure context"
+        # Create self-signed cert as fallback (won't work for Bitwarden clients but allows debugging)
+        log "Creating self-signed fallback cert..."
+        openssl req -x509 -newkey rsa:2048 -keyout /data/vault/tls/key.pem \
+            -out /data/vault/tls/cert.pem -days 365 -nodes \
+            -subj "/CN=$TS_FQDN" 2>/dev/null || true
+        echo "$TS_FQDN" > /data/vault/tls/fqdn.txt
+    fi
 else
     log "ERROR: Could not determine Tailscale FQDN"
 fi
@@ -193,12 +231,14 @@ chown -R vaultwarden:vaultwarden /data/vault
 
 # Set environment variables
 export DATA_FOLDER=/data/vault/data
-export WEB_VAULT_FOLDER=/data/vault/web-vault
+# TEAM_035: web-vault is in /usr/share (not /data) to avoid being shadowed by data.img mount
+export WEB_VAULT_FOLDER=/usr/share/vaultwarden/web-vault
 export WEB_VAULT_ENABLED=true
 
 # Database connection (created automatically by SQL VM init.sh)
-# TEAM_035: Password documented in vm/vault/CREDENTIALS.md
-export DATABASE_URL="postgresql://vaultwarden:PCc5zNNG6v8gwguclMQWMPjk4DUvg5F5@192.168.100.2:5432/vaultwarden"
+# TEAM_035: Password from .env (passed via cmdline), fallback to default
+DB_PASS="${VAULTWARDEN_DB_PASS:-vaultwarden}"
+export DATABASE_URL="postgresql://vaultwarden:${DB_PASS}@192.168.100.2:5432/vaultwarden"
 
 # HTTPS configuration with actual Tailscale hostname
 if [ -f /data/vault/tls/fqdn.txt ]; then
@@ -216,6 +256,12 @@ export ROCKET_TLS="{certs=\"/data/vault/tls/cert.pem\",key=\"/data/vault/tls/key
 export SIGNUPS_ALLOWED=true
 export WEBSOCKET_ENABLED=true
 export LOG_LEVEL=info
+
+# TEAM_035: Admin token from .env (enables /admin panel if set)
+if [ -n "$VAULTWARDEN_ADMIN_TOKEN" ]; then
+    export ADMIN_TOKEN="$VAULTWARDEN_ADMIN_TOKEN"
+    log "Admin panel enabled"
+fi
 
 log "Starting Vaultwarden with DOMAIN=$DOMAIN"
 

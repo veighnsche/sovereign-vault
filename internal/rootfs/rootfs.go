@@ -144,11 +144,14 @@ chmod 600 /dev/console 2>/dev/null
 
 // findInitScript locates the init.sh script based on the rootfs path
 // TEAM_025: Made VM-agnostic to support both SQL and Forge VMs
+// TEAM_035: Added vault VM support
 func findInitScript(rootfsPath string) (string, error) {
 	// Determine VM type from rootfs path
 	vmType := "sql" // default
 	if strings.Contains(rootfsPath, "forgejo") {
 		vmType = "forgejo"
+	} else if strings.Contains(rootfsPath, "vault") {
+		vmType = "vault"
 	}
 
 	// Try common locations relative to working directory

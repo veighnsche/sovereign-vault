@@ -248,18 +248,37 @@ fi
 # The original had single quotes which prevented variable expansion
 su postgres -c "psql -c \"ALTER USER postgres PASSWORD '$DB_PASSWORD';\"" 2>&1
 
+# TEAM_035: Read database passwords from kernel cmdline (centralized in .env)
+FORGEJO_DB_PASS=""
+VAULTWARDEN_DB_PASS=""
+for param in $(cat /proc/cmdline); do
+    case "$param" in
+        forgejo.db_password=*) FORGEJO_DB_PASS="${param#forgejo.db_password=}" ;;
+        vaultwarden.db_password=*) VAULTWARDEN_DB_PASS="${param#vaultwarden.db_password=}" ;;
+    esac
+done
+
 # TEAM_029: Create forgejo database user for Forgejo VM
-su postgres -c "psql -c \"CREATE USER forgejo WITH PASSWORD 'forgejo';\"" 2>&1 || true
+if [ -n "$FORGEJO_DB_PASS" ]; then
+    su postgres -c "psql -c \"CREATE USER forgejo WITH PASSWORD '$FORGEJO_DB_PASS';\"" 2>&1 || true
+    echo "Created forgejo user with password from .env"
+else
+    su postgres -c "psql -c \"CREATE USER forgejo WITH PASSWORD 'forgejo';\"" 2>&1 || true
+    echo "WARNING: No forgejo.db_password in cmdline, using default (insecure)"
+fi
 su postgres -c "psql -c \"CREATE DATABASE forgejo OWNER forgejo;\"" 2>&1 || true
 su postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE forgejo TO forgejo;\"" 2>&1 || true
-echo "Created forgejo database user"
 
 # TEAM_035: Create vaultwarden database user for Vaultwarden VM
-# Password: PCc5zNNG6v8gwguclMQWMPjk4DUvg5F5 (also in vm/vault/CREDENTIALS.md)
-su postgres -c "psql -c \"CREATE USER vaultwarden WITH PASSWORD 'PCc5zNNG6v8gwguclMQWMPjk4DUvg5F5';\"" 2>&1 || true
+if [ -n "$VAULTWARDEN_DB_PASS" ]; then
+    su postgres -c "psql -c \"CREATE USER vaultwarden WITH PASSWORD '$VAULTWARDEN_DB_PASS';\"" 2>&1 || true
+    echo "Created vaultwarden user with password from .env"
+else
+    su postgres -c "psql -c \"CREATE USER vaultwarden WITH PASSWORD 'vaultwarden';\"" 2>&1 || true
+    echo "WARNING: No vaultwarden.db_password in cmdline, using default (insecure)"
+fi
 su postgres -c "psql -c \"CREATE DATABASE vaultwarden OWNER vaultwarden;\"" 2>&1 || true
 su postgres -c "psql -c \"GRANT ALL PRIVILEGES ON DATABASE vaultwarden TO vaultwarden;\"" 2>&1 || true
-echo "Created vaultwarden database user"
 
 echo "PostgreSQL version:"
 su postgres -c "psql -c \"SELECT version();\"" 2>&1

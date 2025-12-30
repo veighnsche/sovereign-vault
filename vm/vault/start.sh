@@ -1,16 +1,15 @@
 #!/system/bin/sh
-# TEAM_016: Sovereign SQL VM Start Script
-# TEAM_023: Added Phantom Process Killer defense
-# TEAM_030: Uses shared bridge for VM-to-VM communication
-# Uses TAP networking with key fix from crosvm-on-android repo
+# TEAM_035: Sovereign Vaultwarden VM Start Script
+# Based on sql/start.sh pattern
+# Uses shared bridge networking (192.168.100.0/24)
 
 SOVEREIGN_DIR="/data/sovereign"
-VM_DIR="${SOVEREIGN_DIR}/vm/sql"
+VM_DIR="${SOVEREIGN_DIR}/vm/vault"
 LOG="${VM_DIR}/console.log"
 KERNEL="${VM_DIR}/Image"
 CROSVM="/apex/com.android.virt/bin/crosvm"
-TAP_NAME="vm_sql"
-# TEAM_030: Bridge-based networking - all VMs on same subnet
+TAP_NAME="vm_vault"
+# TEAM_035: Shared bridge with SQL and Forge VMs
 BRIDGE_NAME="vm_bridge"
 BRIDGE_IP="192.168.100.1"
 
@@ -18,18 +17,15 @@ BRIDGE_IP="192.168.100.1"
 [ -f "${SOVEREIGN_DIR}/.env" ] && . ${SOVEREIGN_DIR}/.env
 
 # TEAM_023: Disable Phantom Process Killer (Android 12+)
-# This is THE MOST CRITICAL defense - without it, Android silently kills
-# child processes (crosvm forks for vCPUs) regardless of OOM settings.
-# Reference: Field Guide Section 1.2 - "the most critical and non-obvious gotcha"
 device_config set_sync_disabled_for_tests persistent 2>/dev/null || true
 device_config put activity_manager max_phantom_processes 2147483647 2>/dev/null || true
 
 # Clean up old instances
-pkill -9 -f "crosvm.*sql" 2>/dev/null || true
+pkill -9 -f "crosvm.*vault" 2>/dev/null || true
 rm -f ${VM_DIR}/vm.sock
 sleep 1
 
-# TEAM_030: Setup shared bridge if not exists
+# TEAM_035: Ensure shared bridge exists (SQL VM usually creates it)
 if ! ip link show ${BRIDGE_NAME} >/dev/null 2>&1; then
     echo "Creating shared VM bridge: ${BRIDGE_NAME}"
     ip link add ${BRIDGE_NAME} type bridge
@@ -37,8 +33,7 @@ if ! ip link show ${BRIDGE_NAME} >/dev/null 2>&1; then
     ip link set ${BRIDGE_NAME} up
 fi
 
-# TEAM_033: ALWAYS ensure networking rules are in place (stop command removes them)
-# These must run on EVERY start, not just when creating the bridge
+# Ensure networking rules are in place
 echo "Ensuring networking rules..."
 
 # Enable IP forwarding
@@ -46,13 +41,11 @@ echo 1 > /proc/sys/net/ipv4/ip_forward
 echo 0 > /proc/sys/net/ipv4/conf/${BRIDGE_NAME}/rp_filter 2>/dev/null || true
 echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
 
-# KEY FIX: Bypass Android policy routing by using main table first
-# From: https://github.com/bvucode/crosvm-on-android
-# Android's netd/fwmark routing blocks VM traffic - this rule makes main table take precedence
+# KEY FIX: Bypass Android policy routing
 ip rule del from all lookup main pref 1 2>/dev/null || true
 ip rule add from all lookup main pref 1
 
-# Add default route to main table (Android keeps it in wlan0 table)
+# Add default route to main table
 GATEWAY=$(ip route show table wlan0 2>/dev/null | grep default | awk '{print $3}')
 if [ -n "$GATEWAY" ]; then
     ip route del default 2>/dev/null || true
@@ -77,26 +70,24 @@ ip link set ${TAP_NAME} up
 echo "TAP ${TAP_NAME} attached to bridge ${BRIDGE_NAME}"
 
 # Build kernel params
-# TEAM_023: Use ttyS0 for console - crosvm --serial captures serial port, NOT virtio hvc0
 KPARAMS="earlycon console=ttyS0 root=/dev/vda rw init=/sbin/init.sh"
 if [ -n "$TAILSCALE_AUTHKEY" ]; then
     KPARAMS="$KPARAMS tailscale.authkey=$TAILSCALE_AUTHKEY"
 fi
-# TEAM_035: Pass database passwords from .env (centralized secrets)
-if [ -n "$POSTGRES_FORGEJO_PASSWORD" ]; then
-    KPARAMS="$KPARAMS forgejo.db_password=$POSTGRES_FORGEJO_PASSWORD"
-fi
+# TEAM_035: Pass secrets from .env (centralized secrets)
 if [ -n "$POSTGRES_VAULTWARDEN_PASSWORD" ]; then
     KPARAMS="$KPARAMS vaultwarden.db_password=$POSTGRES_VAULTWARDEN_PASSWORD"
 fi
+if [ -n "$VAULTWARDEN_ADMIN_TOKEN" ]; then
+    KPARAMS="$KPARAMS vaultwarden.admin_token=$VAULTWARDEN_ADMIN_TOKEN"
+fi
 
 # Start VM with TAP networking
-# TEAM_023: Added data.img as second block device (/dev/vdb) for persistent storage
-# This is CRITICAL for Tailscale machine identity to survive rebuilds!
+# TEAM_035: Vaultwarden uses less resources than PostgreSQL
 $CROSVM run \
     --disable-sandbox \
-    --mem 1024 \
-    --cpus 2 \
+    --mem 512 \
+    --cpus 1 \
     --block path="${VM_DIR}/rootfs.img",root \
     --block path="${VM_DIR}/data.img" \
     --params "$KPARAMS" \
@@ -111,7 +102,6 @@ echo $VM_PID > "${VM_DIR}/vm.pid"
 # Protect from OOM killer
 echo -1000 > /proc/${VM_PID}/oom_score_adj 2>/dev/null || true
 
-# TEAM_033: Fixed undefined variable TAP_HOST_IP
 echo "TAP interface: ${TAP_NAME} (bridge: ${BRIDGE_NAME})"
-echo "SQL VM started (PID: $VM_PID)"
+echo "Vaultwarden VM started (PID: $VM_PID)"
 echo "Log: $LOG"

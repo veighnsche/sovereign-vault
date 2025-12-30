@@ -9,29 +9,23 @@ FROM alpine:3.23
 
 # Install dependencies
 # TEAM_034: NO openrc - we use custom init.sh (OpenRC hangs in AVF)
+# TEAM_035: Added busybox-extras for ntpd, openssl for fallback certs
 RUN apk add --no-cache \
     curl \
     ca-certificates \
     iproute2 \
     netcat-openbsd \
-    tzdata
+    tzdata \
+    busybox-extras \
+    openssl
 
-# TEAM_035: Download Vaultwarden ARM64 binary (updated from 1.32.5)
-# Check https://github.com/dani-garcia/vaultwarden/releases for latest version
-ARG VAULTWARDEN_VERSION=1.35.0
-RUN curl -fsSL "https://github.com/dani-garcia/vaultwarden/releases/download/${VAULTWARDEN_VERSION}/vaultwarden-${VAULTWARDEN_VERSION}-linux-arm64.tar.gz" \
-    -o /tmp/vaultwarden.tar.gz && \
-    tar -xzf /tmp/vaultwarden.tar.gz -C /tmp && \
-    mv /tmp/vaultwarden /usr/bin/vaultwarden && \
-    chmod +x /usr/bin/vaultwarden && \
-    rm -rf /tmp/vaultwarden*
-
-# Download web vault (UI)
-RUN curl -fsSL "https://github.com/dani-garcia/bw_web_builds/releases/download/v2024.6.2c/bw_web_v2024.6.2c.tar.gz" \
-    -o /tmp/web-vault.tar.gz && \
-    mkdir -p /data/vault/web-vault && \
-    tar -xzf /tmp/web-vault.tar.gz -C /data/vault && \
-    rm /tmp/web-vault.tar.gz
+# TEAM_035: Extract Vaultwarden binary from official Docker image
+# Vaultwarden doesn't provide direct binary downloads - must extract from container
+# See: https://github.com/dani-garcia/vaultwarden/wiki/Pre-built-binaries
+# NOTE: web-vault goes to /usr/share (NOT /data) because /data is mounted from data.img
+COPY --from=docker.io/vaultwarden/server:latest-alpine /vaultwarden /usr/bin/vaultwarden
+COPY --from=docker.io/vaultwarden/server:latest-alpine /web-vault /usr/share/vaultwarden/web-vault
+RUN chmod +x /usr/bin/vaultwarden
 
 # TEAM_034: Install Tailscale static binary (same as SQL/Forgejo VMs)
 RUN TAILSCALE_VERSION="1.92.3" && \

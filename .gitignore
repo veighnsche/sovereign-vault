@@ -18,6 +18,9 @@ vm/sql/initramfs-virt
 vm/forgejo/rootfs.img
 vm/forgejo/data.img
 vm/forgejo/Image
+vm/vault/rootfs.img
+vm/vault/data.img
+vm/vault/Image
 
 # Temporary/debug files
 console_log_pulled.txt
