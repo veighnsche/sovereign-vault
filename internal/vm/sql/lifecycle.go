@@ -21,3 +21,18 @@ func (v *VM) Stop() error {
 func (v *VM) Remove() error {
 	return common.RemoveVM(SQLConfig)
 }
+
+// TEAM_039: Clean delegates to common.CleanVM for Tailscale cleanup
+func (v *VM) Clean() error {
+	return common.CleanVM(SQLConfig)
+}
+
+// TEAM_041: Diagnose delegates to common.DiagnoseVM for comprehensive debugging
+func (v *VM) Diagnose() error {
+	return common.DiagnoseVM(SQLConfig)
+}
+
+// TEAM_041: Fix delegates to common.FixVM for automatic issue repair
+func (v *VM) Fix() error {
+	return common.FixVM(SQLConfig)
+}

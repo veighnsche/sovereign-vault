@@ -89,7 +89,7 @@ chown forgejo:forgejo /data/forgejo 2>/dev/null || true
 
 # TEAM_025: Set current date for TLS cert validation
 # Must be recent enough for certificate "not before" dates
-date -s "2025-12-29 14:00:00" 2>/dev/null || true
+date -s "2026-01-02 02:00:00" 2>/dev/null || true
 
 # Create device nodes
 mkdir -p /dev/net

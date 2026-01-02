@@ -92,22 +92,68 @@ func RunVMTests(cfg *VMConfig, customTests []TestFunc) error {
 
 // GetTailscaleFQDN returns the actual Tailscale FQDN for a VM.
 // TEAM_035: Helper for tests that need the full hostname (e.g., HTTPS tests)
+// TEAM_041: Fixed to return full FQDN including domain suffix
 func GetTailscaleFQDN(cfg *VMConfig) string {
+	// First try 'tailscale status' to get the hostname
 	tsOut, err := exec.Command("tailscale", "status").Output()
 	if err != nil {
 		return ""
 	}
+
+	var hostname string
 	lines := strings.Split(string(tsOut), "\n")
 	for _, line := range lines {
 		if strings.Contains(line, cfg.TailscaleHost) && !strings.Contains(line, "offline") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
-				// parts[1] is the hostname (e.g., sovereign-vault-1.tail5bea38.ts.net)
-				return parts[1]
+				hostname = parts[1]
+				break
 			}
 		}
 	}
-	return ""
+
+	if hostname == "" {
+		return ""
+	}
+
+	// If hostname already has domain suffix, return as-is
+	if strings.Contains(hostname, ".") {
+		return hostname
+	}
+
+	// Otherwise, get the domain from tailscale dns status
+	dnsOut, err := exec.Command("tailscale", "status", "--json").Output()
+	if err == nil && strings.Contains(string(dnsOut), "MagicDNSSuffix") {
+		// Extract MagicDNSSuffix from JSON (simple extraction)
+		for _, line := range strings.Split(string(dnsOut), "\n") {
+			if strings.Contains(line, "MagicDNSSuffix") {
+				// "MagicDNSSuffix": "tail5bea38.ts.net",
+				parts := strings.Split(line, "\"")
+				for i, p := range parts {
+					if p == "MagicDNSSuffix" && i+2 < len(parts) {
+						suffix := parts[i+2]
+						if suffix != "" {
+							return hostname + "." + suffix
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: try common suffix patterns
+	// Check if we can resolve with common suffixes
+	for _, suffix := range []string{"tail5bea38.ts.net", "ts.net"} {
+		fqdn := hostname + "." + suffix
+		// Quick DNS check
+		_, err := exec.Command("timeout", "1", "host", fqdn).Output()
+		if err == nil {
+			return fqdn
+		}
+	}
+
+	// Return just hostname if we can't determine suffix
+	return hostname
 }
 
 // TestPortOpen checks if a port is accessible on the TAP interface.

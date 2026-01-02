@@ -24,7 +24,16 @@ log() {
 log "=== Vaultwarden VM Init Starting ==="
 
 # ============================================================================
+# Mount filesystems FIRST (use || true to handle already-mounted cases)
+# TEAM_038: Must mount /proc BEFORE reading /proc/cmdline for secrets!
+# ============================================================================
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sysfs /sys 2>/dev/null || true
+mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+
+# ============================================================================
 # TEAM_035: Read secrets from kernel cmdline (centralized in .env)
+# TEAM_038: Moved AFTER mounting /proc so /proc/cmdline is accessible
 # ============================================================================
 VAULTWARDEN_DB_PASS=""
 VAULTWARDEN_ADMIN_TOKEN=""
@@ -35,14 +44,6 @@ for param in $(cat /proc/cmdline 2>/dev/null); do
     esac
 done
 log "Secrets loaded: db_pass=${VAULTWARDEN_DB_PASS:+SET} admin_token=${VAULTWARDEN_ADMIN_TOKEN:+SET}"
-
-# ============================================================================
-# Mount filesystems (use || true to handle already-mounted cases)
-# TEAM_035: Match SQL init.sh pattern - kernel may pre-mount devtmpfs
-# ============================================================================
-mount -t proc proc /proc 2>/dev/null || true
-mount -t sysfs sysfs /sys 2>/dev/null || true
-mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 mkdir -p /dev/pts /dev/shm /run /tmp
 mount -t devpts devpts /dev/pts 2>/dev/null || true
 mount -t tmpfs -o mode=1777 tmpfs /dev/shm 2>/dev/null || true
@@ -123,13 +124,27 @@ ping -c 2 8.8.8.8 2>&1 || log "WARNING: Internet not reachable"
 # ============================================================================
 log "=== Setting Initial Time ==="
 # Set approximate time for TLS cert validation (will be refined by NTP later)
-date -s "2025-12-30 12:00:00" 2>/dev/null || true
+date -s "2026-01-02 12:00:00" 2>/dev/null || true
 log "Initial time set: $(date)"
 
 # ============================================================================
 # Start Tailscale
+# TEAM_039: ROOT CAUSE FIX - Check state file BEFORE starting tailscaled
+# The previous code checked AFTER tailscaled started, but tailscaled creates
+# the state file on startup, so it always existed (even if empty/new).
 # ============================================================================
 log "=== Starting Tailscale ==="
+
+STATE_FILE="/data/tailscale/tailscaled.state"
+HAS_EXISTING_STATE=false
+
+# Check for existing valid state BEFORE starting tailscaled
+if [ -f "$STATE_FILE" ] && [ -s "$STATE_FILE" ]; then
+    log "Tailscale: Found existing state file ($(stat -c%s "$STATE_FILE") bytes)"
+    HAS_EXISTING_STATE=true
+else
+    log "Tailscale: No existing state file - will register new machine"
+fi
 
 /usr/sbin/tailscaled \
     --state=/data/tailscale/tailscaled.state \
@@ -139,21 +154,13 @@ TAILSCALED_PID=$!
 # Wait for tailscaled to be ready
 sleep 3
 
-# Check if we have valid state or need authkey
-STATE_FILE="/data/tailscale/tailscaled.state"
-STATE_VALID=false
-if [ -f "$STATE_FILE" ] && [ -s "$STATE_FILE" ]; then
-    if grep -q 'PrivateNodeKey' "$STATE_FILE" 2>/dev/null; then
-        STATE_VALID=true
-    fi
-fi
-
-if [ "$STATE_VALID" = "true" ]; then
+if [ "$HAS_EXISTING_STATE" = "true" ]; then
     log "Tailscale: Using existing machine identity"
-    /usr/bin/tailscale up --hostname=sovereign-vault --accept-routes --reset 2>&1
+    # Timeout is defensive - tailscale up can hang if network is slow/unavailable
+    # VM should continue booting even if Tailscale fails to connect
+    timeout 30 /usr/bin/tailscale up --hostname=sovereign-vault --accept-routes 2>&1 || log "Tailscale: Connection timed out (will retry in background)"
 else
-    log "Tailscale: No valid state, using authkey for registration..."
-    # Get authkey from kernel command line
+    log "Tailscale: Registering new machine with authkey..."
     AUTHKEY=""
     for param in $(cat /proc/cmdline); do
         case "$param" in
@@ -161,14 +168,13 @@ else
         esac
     done
     if [ -n "$AUTHKEY" ]; then
-        rm -f "$STATE_FILE" 2>/dev/null
-        /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-vault --reset 2>&1
+        timeout 30 /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-vault 2>&1 || log "Tailscale: Registration timed out"
     else
         log "WARNING: No authkey for first-time registration"
     fi
 fi
 
-/usr/bin/tailscale status 2>&1
+/usr/bin/tailscale status 2>&1 || true
 
 # TEAM_035: Sync time properly now that DNS works via Tailscale
 log "=== Syncing Time via NTP ==="

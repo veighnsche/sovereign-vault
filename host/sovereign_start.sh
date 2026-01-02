@@ -286,31 +286,43 @@ stop_all() {
 
 # Handle single VM start (for CLI integration)
 # CRITICAL: This function STAYS ALIVE as a watchdog to prevent Android killing the VM
+# TEAM_038: Fixed trap to only stop this VM, not all VMs
 start_single() {
     local VM="$1"
     local VM_PID=""
+    local VM_DIR=""
     
     disable_process_killers
     setup_networking
     
     case "$VM" in
         sql)
+            VM_DIR="$SQL_DIR"
             local SQL_EXTRA=""
             [ -n "$POSTGRES_FORGEJO_PASSWORD" ] && SQL_EXTRA="$SQL_EXTRA forgejo.db_password=$POSTGRES_FORGEJO_PASSWORD"
             [ -n "$POSTGRES_VAULTWARDEN_PASSWORD" ] && SQL_EXTRA="$SQL_EXTRA vaultwarden.db_password=$POSTGRES_VAULTWARDEN_PASSWORD"
             VM_PID=$(start_vm "$SQL_DIR" "vm_sql" "$SQL_EXTRA")
             ;;
         forge)
+            VM_DIR="$FORGE_DIR"
             VM_PID=$(start_vm "$FORGE_DIR" "vm_forge" "")
             ;;
         vault)
-            VM_PID=$(start_vm "$VAULT_DIR" "vm_vault" "")
+            VM_DIR="$VAULT_DIR"
+            # TEAM_038: Pass database password to Vaultwarden VM
+            local VAULT_EXTRA=""
+            [ -n "$POSTGRES_VAULTWARDEN_PASSWORD" ] && VAULT_EXTRA="$VAULT_EXTRA vaultwarden.db_password=$POSTGRES_VAULTWARDEN_PASSWORD"
+            VM_PID=$(start_vm "$VAULT_DIR" "vm_vault" "$VAULT_EXTRA")
             ;;
         *)
             log "Unknown VM: $VM"
             exit 1
             ;;
     esac
+    
+    # TEAM_038: Override trap to only stop THIS VM, not all VMs
+    # This prevents stopping SQL from also killing Vault, etc.
+    trap "log 'Stopping ${VM} VM (PID: ${VM_PID})'; kill ${VM_PID} 2>/dev/null; rm -f ${VM_DIR}/vm.pid; exit 0" TERM INT
     
     # CRITICAL: Stay alive as watchdog - this keeps crosvm as our child
     # Without this, crosvm becomes orphaned and Android init kills it after ~90s

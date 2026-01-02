@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/anthropics/sovereign/internal/device"
@@ -16,6 +17,13 @@ import (
 // TEAM_029: Extracted from sql/lifecycle.go Stop() and forge/lifecycle.go Stop()
 // TEAM_029: Added robust error handling and timeouts for all edge cases
 // TEAM_037: Also kills watchdog daemon to fully clean up
+// CleanVM removes Tailscale registrations for a VM.
+// TEAM_039: Added for Tailscale cleanup via CLI
+func CleanVM(cfg *VMConfig) error {
+	fmt.Printf("=== Cleaning %s Tailscale registrations ===\n", cfg.DisplayName)
+	return RemoveTailscaleRegistrations(cfg.TailscaleHost)
+}
+
 func StopVM(cfg *VMConfig) error {
 	fmt.Printf("=== Stopping %s VM ===\n", cfg.DisplayName)
 
@@ -142,22 +150,47 @@ func StartVM(cfg *VMConfig) error {
 	}
 
 	consoleLog := fmt.Sprintf("%s/console.log", cfg.DevicePath)
-	device.RunShellCommand(fmt.Sprintf("rm -f %s", consoleLog))
+
+	// TEAM_041: Clean up any stale state before starting
+	// Remove old console.log, socket, and pid files
+	device.RunShellCommand(fmt.Sprintf("rm -f %s %s/vm.sock %s/vm.pid", consoleLog, cfg.DevicePath, cfg.DevicePath))
 
 	// TEAM_037: Use daemon script with "start <vm>" to start a single VM
 	// The daemon script stays alive in background, keeping crosvm as its child
 	// This prevents Android init from killing crosvm as an orphaned process
 	if device.FileExists(daemonScript) {
 		fmt.Println("Starting VM via daemon (prevents Android killing)...")
-		// Run daemon in background with nohup - it will stay alive and keep crosvm as child
-		// The key is that we use 'start <vm>' mode which starts just one VM
-		// and the script's watchdog loop keeps running
-		startCmd := fmt.Sprintf("nohup %s start %s > /data/sovereign/daemon_%s.log 2>&1 &",
-			daemonScript, cfg.Name, cfg.Name)
+
+		// TEAM_041: Clear old daemon log before starting
+		daemonLog := fmt.Sprintf("/data/sovereign/daemon_%s.log", cfg.Name)
+		device.RunShellCommand(fmt.Sprintf("rm -f %s", daemonLog))
+
+		// TEAM_041: Run daemon in a completely detached process
+		// Use SysProcAttr to create a new process group so it survives when Go exits
+		startCmd := fmt.Sprintf("%s start %s", daemonScript, cfg.Name)
 		cmd := exec.Command("adb", "shell", "su", "-c", startCmd)
-		if err := cmd.Run(); err != nil {
+
+		// Detach the process completely - new process group, new session
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid: true, // Create new process group
+			Pgid:    0,    // Use the new process's PID as PGID
+		}
+
+		// Start the command
+		if err := cmd.Start(); err != nil {
 			return fmt.Errorf("daemon start failed: %w", err)
 		}
+
+		fmt.Printf("Started adb process (PID: %d)\n", cmd.Process.Pid)
+
+		// Release the process - we don't want to wait for it or kill it on exit
+		if err := cmd.Process.Release(); err != nil {
+			fmt.Printf("Warning: could not release process: %v\n", err)
+		}
+
+		// Give the daemon time to set up networking and start crosvm
+		fmt.Println("Waiting for daemon to start VM...")
+		time.Sleep(10 * time.Second)
 	} else {
 		// Fallback to legacy approach (will still be killed after ~90s)
 		fmt.Println("⚠ Using legacy start.sh (VMs may be killed after ~90s)")
@@ -175,6 +208,7 @@ func StartVM(cfg *VMConfig) error {
 // StreamBootLogs streams console.log and waits for the ready marker.
 // TEAM_029: Extracted from sql/lifecycle.go streamBootAndWaitForPostgres()
 // and forge/lifecycle.go streamBootAndWaitForForgejo()
+// TEAM_041: Added startup grace period - daemon script takes time to set up networking
 func StreamBootLogs(cfg *VMConfig) error {
 	timeout := cfg.StartTimeout
 	if timeout == 0 {
@@ -184,6 +218,12 @@ func StreamBootLogs(cfg *VMConfig) error {
 	var lastLineCount int
 	startTime := time.Now()
 	consoleLog := fmt.Sprintf("%s/console.log", cfg.DevicePath)
+
+	// TEAM_041: Grace period before checking if process died
+	// The daemon script runs disable_process_killers and setup_networking before starting crosvm
+	// This takes 5-10 seconds, so don't declare death until after grace period
+	const startupGracePeriod = 15 * time.Second
+	processEverSeen := false
 
 	for {
 		elapsed := time.Since(startTime)
@@ -221,7 +261,13 @@ func StreamBootLogs(cfg *VMConfig) error {
 			}
 		}
 
-		if device.GetProcessPID(cfg.ProcessPattern) == "" {
+		// TEAM_041: Check if process is running, but respect grace period
+		pid := device.GetProcessPID(cfg.ProcessPattern)
+		if pid != "" {
+			processEverSeen = true
+		} else if processEverSeen || elapsed > startupGracePeriod {
+			// Only declare death if we saw the process before and it's gone,
+			// or if grace period passed and process never appeared
 			return fmt.Errorf("VM process died during boot - check console.log")
 		}
 
