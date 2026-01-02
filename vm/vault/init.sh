@@ -70,21 +70,47 @@ chown -R vaultwarden:vaultwarden /data/vault 2>/dev/null || true
 
 # ============================================================================
 # Network configuration
+# TEAM_037: Fixed to detect interface like SQL/Forgejo (not hardcode eth0)
 # ============================================================================
 log "=== Configuring Network ==="
 
 # Bring up loopback
 ip link set lo up
 
-# Configure eth0 (TAP interface from host)
-# Vault VM gets 192.168.100.4 (SQL=.2, Forge=.3, Vault=.4)
-ip link set eth0 up
-ip addr add 192.168.100.4/24 dev eth0
-ip route add default via 192.168.100.1
-# TEAM_035: Set DNS resolver (required for ACME/Let's Encrypt cert generation)
-echo "nameserver 8.8.8.8" > /etc/resolv.conf
+# Find virtio network interface (not tunnel interfaces like erspan0)
+IFACE=""
+for iface in $(ls /sys/class/net/); do
+    case "$iface" in
+        eth*|enp*|ens*) IFACE="$iface"; break ;;
+    esac
+done
+# Fallback: look for device with virtio driver
+if [ -z "$IFACE" ]; then
+    for iface in $(ls /sys/class/net/); do
+        if [ -d "/sys/class/net/$iface/device/driver" ]; then
+            driver=$(basename $(readlink /sys/class/net/$iface/device/driver))
+            if [ "$driver" = "virtio_net" ]; then
+                IFACE="$iface"
+                break
+            fi
+        fi
+    done
+fi
+log "Found interface: $IFACE"
 
-log "Network configured: $(ip addr show eth0 | grep inet)"
+if [ -n "$IFACE" ]; then
+    # Vault VM gets 192.168.100.4 (SQL=.2, Forge=.3, Vault=.4)
+    ip addr add 192.168.100.4/24 dev "$IFACE"
+    ip link set "$IFACE" up
+    ip route add default via 192.168.100.1
+    # TEAM_035: Set DNS resolver (required for ACME/Let's Encrypt cert generation)
+    echo "nameserver 8.8.8.8" > /etc/resolv.conf
+    log "Network configured on $IFACE (192.168.100.4)"
+    ip addr show "$IFACE"
+else
+    log "WARNING: No network interface found"
+    ip link
+fi
 
 # Test connectivity
 log "Testing internet connectivity..."

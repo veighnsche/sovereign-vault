@@ -1,6 +1,6 @@
 # TEAM_006: PostgreSQL VM for Sovereign Vault
 # Architecture: ARM64 (runs on Pixel 6 under pKVM)
-FROM alpine:3.23
+FROM alpine:3.21
 
 # Install PostgreSQL and dependencies
 # TEAM_020: Removed openrc - we use simple_init_tap which bypasses it

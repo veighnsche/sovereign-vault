@@ -130,83 +130,17 @@ fi
 echo "=== Testing Network ==="
 ping -c 2 8.8.8.8 2>&1 || echo "Ping failed - will retry after Tailscale"
 
-# Start Tailscale
-# TEAM_020: tailscaled auto-reconnects - only need authkey for FIRST registration
-#
-# ============================================================================
-# TEAM_023 FIX: Tailscale state now persisted on data.img!
-# ============================================================================
-# The duplicate registration bug is FIXED by:
-# 1. Mounting data.img to /data (done above)
-# 2. Storing tailscaled.state in /data/tailscale/ (persistent disk)
-# 3. Machine identity survives rebuilds - no more duplicates!
-# ============================================================================
-echo "=== Starting Tailscale ==="
-mkdir -p /data/tailscale /var/run/tailscale /dev/net
-[ -e /dev/net/tun ] || mknod /dev/net/tun c 10 200
-chmod 666 /dev/net/tun
+# TEAM_037: Tailscale REMOVED from SQL VM
+# Forge and Vault connect via TAP network (192.168.100.2:5432), not Tailscale.
+# This simplifies the SQL VM and removes unnecessary complexity.
+# If external Tailnet access to PostgreSQL is needed later, re-enable this section.
+echo "=== Tailscale Disabled (not needed for SQL) ==="
+echo "Forge/Vault connect via TAP: 192.168.100.2:5432"
 
-# TEAM_030: Use native tun mode - kernel now has full nftables support
-/usr/sbin/tailscaled \
-    --state=/data/tailscale/tailscaled.state \
-    --socket=/var/run/tailscale/tailscaled.sock &
-TAILSCALED_PID=$!
-
-# Wait for tailscaled to be ready (check socket exists)
-for i in 1 2 3 4 5; do
-    [ -S /var/run/tailscale/tailscaled.sock ] && break
-    sleep 1
-done
-
-# TEAM_023: Check if we have PERSISTENT state (machine identity survives rebuilds)
-# The state file on /data/tailscale is the source of truth, not `tailscale status`
-# which may not be ready immediately after tailscaled starts.
-STATE_FILE="/data/tailscale/tailscaled.state"
-
-# TEAM_030: Validate state file content, not just existence
-# A corrupt/empty state file will cause Tailscale to generate new nodekey
-STATE_VALID=false
-if [ -f "$STATE_FILE" ] && [ -s "$STATE_FILE" ]; then
-    # Check if state has actual Tailscale identity (not just empty JSON)
-    if grep -q 'PrivateNodeKey' "$STATE_FILE" 2>/dev/null; then
-        STATE_VALID=true
-    else
-        echo "Tailscale: State file exists but appears invalid, will use authkey"
-    fi
-fi
-
-if [ "$STATE_VALID" = "true" ]; then
-    # We have valid saved state - reconnect without authkey (preserves machine identity!)
-    echo "Tailscale: Found valid persistent state, reconnecting..."
-    # TEAM_034: Direct port binding works - no subnet routing needed
-    # PostgreSQL listens on 0.0.0.0, Tailscale routes inbound traffic directly
-    /usr/bin/tailscale up --hostname=sovereign-sql --accept-routes 2>&1
-else
-    # First boot or invalid state - need authkey for registration
-    echo "Tailscale: No valid state, using authkey for registration..."
-    AUTHKEY=""
-    for param in $(cat /proc/cmdline); do
-        case "$param" in
-            tailscale.authkey=*) AUTHKEY="${param#tailscale.authkey=}" ;;
-        esac
-    done
-    if [ -n "$AUTHKEY" ]; then
-        # Delete invalid state file if exists
-        rm -f "$STATE_FILE" 2>/dev/null
-        # TEAM_034: Direct port binding works - no subnet routing needed
-        /usr/bin/tailscale up --authkey="$AUTHKEY" --hostname=sovereign-sql --accept-routes 2>&1
-    else
-        echo "WARNING: No authkey for first-time registration"
-    fi
-fi
-
-# TEAM_023: Sync time via Tailscale/internet now that network is up
-# This fixes TLS cert validation issues
+# TEAM_037: Sync time via NTP directly (no Tailscale needed)
 if command -v ntpd >/dev/null 2>&1; then
     ntpd -d -q -n -p pool.ntp.org 2>&1 || true
 fi
-
-/usr/bin/tailscale status 2>&1
 
 # Start PostgreSQL
 echo "=== Starting PostgreSQL ==="
@@ -291,8 +225,8 @@ su postgres -c "psql -c \"SELECT version();\"" 2>&1
 log "PostgreSQL started"
 log "=== INIT COMPLETE ==="
 
-# TEAM_023: Supervision loop for BOTH Tailscale and PostgreSQL
-# If either dies (OOM, crash, anything), restart it automatically.
+# TEAM_037: Supervision loop for PostgreSQL only (Tailscale removed)
+# If PostgreSQL dies (OOM, crash, anything), restart it automatically.
 # Reference: Field Guide Section 6 - "No process supervision in VM"
 while true; do
     # Check PostgreSQL
@@ -302,18 +236,6 @@ while true; do
         su postgres -c "pg_ctl -D /data/postgres -l /var/log/postgresql.log restart" 2>&1 || \
         su postgres -c "pg_ctl -D /data/postgres -l /var/log/postgresql.log start" 2>&1
         sleep 5
-    fi
-    
-    # Check Tailscale daemon
-    if ! kill -0 $TAILSCALED_PID 2>/dev/null; then
-        echo "$(date): Tailscaled died, restarting..."
-        # TEAM_030: Use native tun mode - kernel has full nftables support
-        /usr/sbin/tailscaled \
-            --state=/data/tailscale/tailscaled.state \
-            --socket=/var/run/tailscale/tailscaled.sock &
-        TAILSCALED_PID=$!
-        sleep 3
-        # TEAM_034: tailscale serve removed - direct port binding works
     fi
     
     sleep 30

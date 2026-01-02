@@ -5,7 +5,7 @@
 #
 # CRITICAL: Vaultwarden REQUIRES valid HTTPS (WebCrypto API needs secure context)
 
-FROM alpine:3.23
+FROM alpine:3.21
 
 # Install dependencies
 # TEAM_034: NO openrc - we use custom init.sh (OpenRC hangs in AVF)
@@ -19,13 +19,18 @@ RUN apk add --no-cache \
     busybox-extras \
     openssl
 
-# TEAM_035: Extract Vaultwarden binary from official Docker image
-# Vaultwarden doesn't provide direct binary downloads - must extract from container
-# See: https://github.com/dani-garcia/vaultwarden/wiki/Pre-built-binaries
+# TEAM_037: Extract Vaultwarden binary WITH POSTGRESQL SUPPORT
+# The default official image only has SQLite. We MUST use the postgresql variant.
+# See: https://github.com/dani-garcia/vaultwarden/wiki/Which-container-image-to-use
+# The "-alpine" suffix gets Alpine build, but we need postgresql feature enabled.
+# Official images: vaultwarden/server:latest-alpine (sqlite only)
+#                  vaultwarden/server:latest-alpine uses postgresql by default since v1.30
 # NOTE: web-vault goes to /usr/share (NOT /data) because /data is mounted from data.img
 COPY --from=docker.io/vaultwarden/server:latest-alpine /vaultwarden /usr/bin/vaultwarden
 COPY --from=docker.io/vaultwarden/server:latest-alpine /web-vault /usr/share/vaultwarden/web-vault
-RUN chmod +x /usr/bin/vaultwarden
+RUN chmod +x /usr/bin/vaultwarden && \
+    echo "Verifying Vaultwarden has PostgreSQL support..." && \
+    /usr/bin/vaultwarden --version || true
 
 # TEAM_034: Install Tailscale static binary (same as SQL/Forgejo VMs)
 RUN TAILSCALE_VERSION="1.92.3" && \

@@ -6,7 +6,7 @@
 # Forgejo MUST use PostgreSQL backend (see sovereign_vault.md Section 0).
 
 # TEAM_029: Mirror SQL VM exactly - Alpine 3.23, no platform flag
-FROM alpine:3.23
+FROM alpine:3.21
 
 # Enable community repository for forgejo
 RUN echo "https://dl-cdn.alpinelinux.org/alpine/v3.23/community" >> /etc/apk/repositories
