@@ -25,8 +25,8 @@ var VaultConfig = &common.VMConfig{
 	DockerImage:    "sovereign-vault",
 	SharedKernel:   true,
 	KernelSource:   "vm/sql/Image",
-	NeedsSecrets:   true, // Vaultwarden needs database password
-	ProcessPattern: "[c]rosvm.*vault",
+	NeedsSecrets:   true,                  // Vaultwarden needs database password
+	ProcessPattern: "[c]rosvm.*vm/vault/", // TEAM_036: Match path, not 'vault' (SQL cmdline has vaultwarden.db_password)
 	// Vaultwarden requires PostgreSQL for its database
 	Dependencies: []common.ServiceDependency{
 		common.PostgreSQLDependency,

@@ -28,7 +28,7 @@ var ForgeConfig = &common.VMConfig{
 	SharedKernel:   true,
 	KernelSource:   "vm/sql/Image",
 	NeedsSecrets:   false,
-	ProcessPattern: "[c]rosvm.*forge",
+	ProcessPattern: "[c]rosvm.*vm/forgejo/", // TEAM_036: Match path, not 'forge' (SQL cmdline has forgejo.db_password)
 	// TEAM_029: Forgejo requires PostgreSQL for its database
 	Dependencies: []common.ServiceDependency{
 		common.PostgreSQLDependency,

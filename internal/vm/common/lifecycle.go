@@ -1,5 +1,6 @@
 // VM lifecycle operations (Start, Stop, Remove)
 // TEAM_029: Extracted from sql/lifecycle.go and forge/lifecycle.go
+// TEAM_037: Fixed VM killing by using daemon script that stays alive
 package common
 
 import (
@@ -14,6 +15,7 @@ import (
 // StopVM stops a running VM and cleans up networking.
 // TEAM_029: Extracted from sql/lifecycle.go Stop() and forge/lifecycle.go Stop()
 // TEAM_029: Added robust error handling and timeouts for all edge cases
+// TEAM_037: Also kills watchdog daemon to fully clean up
 func StopVM(cfg *VMConfig) error {
 	fmt.Printf("=== Stopping %s VM ===\n", cfg.DisplayName)
 
@@ -36,6 +38,18 @@ func StopVM(cfg *VMConfig) error {
 		}
 	} else {
 		fmt.Println("VM not running")
+	}
+
+	// TEAM_037: Kill watchdog daemon for this VM if running
+	// The watchdog is a background sovereign_start.sh process monitoring this VM
+	daemonPattern := fmt.Sprintf("[s]overeign_start.sh.*%s", cfg.Name)
+	daemonPid, _ := device.RunShellCommand(fmt.Sprintf("pgrep -f '%s' 2>/dev/null | head -1", daemonPattern))
+	if daemonPid != "" {
+		daemonPid = strings.TrimSpace(daemonPid)
+		if daemonPid != "" {
+			fmt.Printf("Stopping watchdog daemon (PID: %s)...\n", daemonPid)
+			device.RunShellCommand(fmt.Sprintf("kill %s 2>/dev/null", daemonPid))
+		}
 	}
 
 	fmt.Println("Cleaning up networking...")
@@ -99,6 +113,7 @@ func RemoveVM(cfg *VMConfig) error {
 
 // StartVM starts a VM and streams boot logs until ready.
 // TEAM_029: Extracted from sql/lifecycle.go Start() and forge/lifecycle.go Start()
+// TEAM_037: Uses daemon script to keep parent alive, preventing Android init from killing VMs
 func StartVM(cfg *VMConfig) error {
 	fmt.Printf("=== Starting %s VM ===\n", cfg.DisplayName)
 
@@ -118,20 +133,39 @@ func StartVM(cfg *VMConfig) error {
 
 	fmt.Println("Tailscale: Using persistent machine identity (no cleanup needed)")
 
-	startScript := fmt.Sprintf("%s/start.sh", cfg.DevicePath)
-	if !device.FileExists(startScript) {
-		return fmt.Errorf("start script not found - run 'sovereign deploy --%s' first", cfg.Name)
+	// TEAM_037: Check for daemon script (preferred) or fall back to legacy start.sh
+	daemonScript := "/data/sovereign/sovereign_start.sh"
+	legacyScript := fmt.Sprintf("%s/start.sh", cfg.DevicePath)
+
+	if !device.FileExists(daemonScript) && !device.FileExists(legacyScript) {
+		return fmt.Errorf("no start script found - run 'sovereign deploy --%s' first", cfg.Name)
 	}
 
 	consoleLog := fmt.Sprintf("%s/console.log", cfg.DevicePath)
 	device.RunShellCommand(fmt.Sprintf("rm -f %s", consoleLog))
 
-	fmt.Println("Starting VM...")
-	cmd := exec.Command("adb", "shell", "su", "-c", startScript)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("start script failed: %w", err)
+	// TEAM_037: Use daemon script with "start <vm>" to start a single VM
+	// The daemon script stays alive in background, keeping crosvm as its child
+	// This prevents Android init from killing crosvm as an orphaned process
+	if device.FileExists(daemonScript) {
+		fmt.Println("Starting VM via daemon (prevents Android killing)...")
+		// Run daemon in background with nohup - it will stay alive and keep crosvm as child
+		// The key is that we use 'start <vm>' mode which starts just one VM
+		// and the script's watchdog loop keeps running
+		startCmd := fmt.Sprintf("nohup %s start %s > /data/sovereign/daemon_%s.log 2>&1 &",
+			daemonScript, cfg.Name, cfg.Name)
+		cmd := exec.Command("adb", "shell", "su", "-c", startCmd)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("daemon start failed: %w", err)
+		}
+	} else {
+		// Fallback to legacy approach (will still be killed after ~90s)
+		fmt.Println("⚠ Using legacy start.sh (VMs may be killed after ~90s)")
+		fmt.Println("  Run 'sovereign deploy' to install the daemon script for stability")
+		cmd := exec.Command("adb", "shell", "su", "-c", legacyScript)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("start script failed: %w", err)
+		}
 	}
 
 	fmt.Println("\n--- Boot Sequence ---")

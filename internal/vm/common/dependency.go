@@ -34,8 +34,10 @@ func checkDependency(dep ServiceDependency) error {
 	fmt.Printf("  Checking %s (%s:%d)... ", dep.Description, dep.TailscaleHost, dep.Port)
 
 	// First try TAP IP if available (for VM-to-VM on same device)
+	// TEAM_036: Must run nc on device via adb since TAP network is only accessible there
 	if dep.TAPIP != "" {
-		cmd := exec.Command("nc", "-z", "-w", "2", dep.TAPIP, fmt.Sprintf("%d", dep.Port))
+		cmd := exec.Command("adb", "shell", "su", "-c",
+			fmt.Sprintf("nc -z -w 2 %s %d", dep.TAPIP, dep.Port))
 		if err := cmd.Run(); err == nil {
 			fmt.Printf("✓ (TAP: %s)\n", dep.TAPIP)
 			return nil

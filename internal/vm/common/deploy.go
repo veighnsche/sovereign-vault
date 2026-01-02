@@ -1,12 +1,20 @@
 // VM deployment operations (push files to device)
 // TEAM_029: Extracted from sql/sql.go and forge/forge.go Deploy()
+// TEAM_037: Added boot script deployment to fix VM killing issue
 package common
 
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/anthropics/sovereign/internal/device"
+)
+
+var (
+	// bootScriptDeployed tracks if boot script has been deployed this session
+	bootScriptDeployed bool
+	bootScriptMu       sync.Mutex
 )
 
 // FreshDataDeploy forces wiping data.img and re-registering Tailscale
@@ -124,7 +132,57 @@ func DeployVM(cfg *VMConfig) error {
 		return fmt.Errorf("failed to chmod start script: %w", err)
 	}
 
+	// TEAM_037: Deploy boot script to /data/adb/service.d/ (once per session)
+	if err := DeployBootScript(); err != nil {
+		fmt.Printf("  ⚠ Warning: boot script deployment failed: %v\n", err)
+	}
+
 	fmt.Printf("\n✓ %s VM deployed\n", cfg.DisplayName)
 	fmt.Printf("\nNext: sovereign start --%s\n", cfg.Name)
+	return nil
+}
+
+// DeployBootScript deploys the sovereign_start.sh boot script to /data/adb/service.d/
+// TEAM_037: This script runs at boot via KernelSU and keeps VMs alive as its children,
+// preventing Android init from killing them as orphaned processes.
+func DeployBootScript() error {
+	bootScriptMu.Lock()
+	defer bootScriptMu.Unlock()
+
+	// Only deploy once per session
+	if bootScriptDeployed {
+		return nil
+	}
+
+	localScript := "host/sovereign_start.sh"
+	if _, err := os.Stat(localScript); os.IsNotExist(err) {
+		return fmt.Errorf("boot script not found: %s", localScript)
+	}
+
+	// Create /data/adb/service.d/ if it doesn't exist
+	serviceDir := "/data/adb/service.d"
+	device.RunShellCommand(fmt.Sprintf("mkdir -p %s", serviceDir))
+
+	// Push boot script
+	destScript := serviceDir + "/sovereign_start.sh"
+	fmt.Println("Deploying boot script to " + destScript + "...")
+	if err := device.PushFile(localScript, destScript); err != nil {
+		return fmt.Errorf("failed to push boot script: %w", err)
+	}
+
+	// Make executable
+	if _, err := device.RunShellCommand(fmt.Sprintf("chmod +x %s", destScript)); err != nil {
+		return fmt.Errorf("failed to chmod boot script: %w", err)
+	}
+
+	// Also copy to /data/sovereign/ for CLI access
+	device.RunShellCommand("mkdir -p /data/sovereign")
+	if err := device.PushFile(localScript, "/data/sovereign/sovereign_start.sh"); err != nil {
+		return fmt.Errorf("failed to push boot script to /data/sovereign: %w", err)
+	}
+	device.RunShellCommand("chmod +x /data/sovereign/sovereign_start.sh")
+
+	bootScriptDeployed = true
+	fmt.Println("✓ Boot script deployed (VMs will auto-start at boot)")
 	return nil
 }
